@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公众号文章发布前爆款检测引擎 v2.0 全行业版
+公众号文章发布前爆款检测引擎 v2.2 全行业版
 ==========================================
-四层检测：L1 内容六维评分 / L2 阅读量预测 / L3 9条红线合规 / L4 反AI味检测
-支持全行业多赛道：自动识别赛道 + 手动指定赛道
+五层检测：L1 内容八维评分 / L2 阅读量预测(含流量池) / L2+ 爆款四基因 / L3 9条红线+多平台违禁 / L4 量化反AI味
+支持全行业多赛道：自动识别赛道 + 手动指定赛道 + 风格自适应评分
 
 用法:
     python3 detector.py <标题> <正文文件路径> [--fans 粉丝数] [--open-rate 账号基准打开率%] [--track 赛道名]
@@ -180,8 +180,31 @@ SUPERSTITION = ["属相", "风水", "算命", "大师", "开运", "转运", "犯
 INDUCE = ["转发后领取", "分享截图", "关注后领取", "扫码关注", "不转不是", "转发一生平安",
           "点赞抽奖", "集赞", "邀请好友", "助力"]
 TRIPLE_PATTERN = re.compile(r"[^，。；\n]*[，、][^，。；\n]*[，、][^，。；\n]*")
+# 分节/小标题正则（供结构、视觉维度复用）
+SUBHEADING_RE = re.compile(
+    r"^(#{1,3}\s|一、|二、|三、|第[一二三四五六七八九十\d]+[、.。，]|[0-9]+[、.。，]|【|（[0-9]+）|\([0-9]+\))")
+# 多平台违禁/敏感词（公众号+小红书+抖音 共通高频雷区，离线内嵌，warn 级为主避免误杀）
+BANNED_ABSOLUTE = ["最", "第一", "国家级", "顶级", "万能", "100%", "绝对", "全网", "史上",
+                   "极致", "世界级", "唯一", "首选", "王牌", "销量第一", "领导者", "永久", "零风险"]
+BANNED_MEDICAL = ["治疗", "治愈", "抗癌", "消炎", "杀菌", "瘦身", "燃脂", "排毒", "药到病除", "降三高", "治百病"]
+BANNED_INDUCE = ["私信", "加微信", "免费领", "扫码", "限时", "抢购", "秒杀", "下单", "领券", "优惠券", "抽奖"]
+BANNED_FALSE = ["保证有效", "百分百有效", "无效退款", "稳赚不赔", "一定有效", " guaranteed"]
+# 绝对化对比词（反AI量化用）：模板腔信号
+ABSOLUTE_CLAIM = ["一定", "必须", "绝对", "毫无疑问", "毋庸置疑", "所有人都", "每个人都应该",
+                  "无一例外", "百分之百", "100%", "必然", "统统", "全都"]
 LEVELS = {"S": (85, "爆款潜力，直接发"), "A": (70, "改完 P0 项后发"),
           "B": (55, "大改标题+开头再考虑"), "C": (0, "选题建议重做")}
+
+# L1 八维权重（合计 100）：在 v2.1 六维基础上新增「结构节奏」「视觉呈现」
+DIM_FULL = {
+    "title": 18, "opening": 16, "content": 18, "structure": 14,
+    "topic": 12, "readability": 7, "visual": 8, "interaction": 7,
+}
+DIM_NAMES = {
+    "title": "标题钩子力", "opening": "开头钩子力", "content": "内容价值度",
+    "structure": "结构节奏", "topic": "选题势能", "readability": "阅读体验",
+    "visual": "视觉呈现", "interaction": "互动引导",
+}
 
 # 默认赛道基准打开率（各赛道差异化）
 TRACK_BASE_OPEN_RATE = {
@@ -254,6 +277,8 @@ def dim_fix(key, style):
         "opening": "前100字直接抛冲突场景或扎心设问，缩短铺垫，前两句就给钩子",
         "topic": "锚定一个具体赛道人群，补足其痛点词/利益点，或给选题一个新鲜视角",
         "readability": "拆短句（均≤25字）、压段落（≤120字）、减少英文缩写，提升手机阅读友好度",
+        "structure": "检查起承转合：开头抛核心问题、中间有转折/递进、结尾补收束或升华金句",
+        "visual": "补充分节小标题/加粗关键词，或插入配图，提升扫读效率与停留时长",
     }
     return base.get(key, "建议重写该维度")
 
@@ -346,7 +371,7 @@ def score_title(title, track):
         s += 2; b.append((f"字数{n}，可接受区间", 2))
     else:
         b.append((f"字数{n}，偏离最优区间", 0))
-    s = min(s, 25)
+    s = min(s, 18)
     return s, b
 # ============================================================
 # L1-2 开头钩子力 (20)
@@ -375,7 +400,7 @@ def score_opening(title, body, track):
     if any(w in op for w in t["benefit"]) and len(op) < 200:
         s += 2
         b.append(("开头前置利益点", 2))
-    s = max(0, min(s, 20))
+    s = max(0, min(s, 16))
     return s, b
 
 
@@ -437,7 +462,7 @@ def score_content(title, body, track, style):
         if benefit_hit >= 2:
             s += 2
             b.append((f"利益点明确（{benefit_hit}处）", 2))
-    s = min(s, 20)
+    s = min(s, 18)
     return s, b
 
 
@@ -483,7 +508,7 @@ def score_topic(title, body, track, style):
         if re.search(r"突然|那一刻|后来发现|意识到|我才发现|说真的|其实我们|换个角度", text):
             s += 2
             b.append(("有新鲜视角/反思转折，选题不陈旧", 2))
-    s = min(s, 15)
+    s = min(s, 12)
     return s, b
 
 
@@ -524,7 +549,7 @@ def score_readability(body, track):
     if re.search(r"[？?]|“|”|「|」|你说|我说|他问|其实|说真的|讲真", body):
         s += 3
         b.append(("有对话感/口语化，不枯燥", 3))
-    s = min(s, 10)
+    s = min(s, 7)
     return s, b
 
 
@@ -583,7 +608,79 @@ def score_interaction(body, style):
         if s == 0:
             b.append(("信息价值自带分享属性，但缺互动钩子", 0))
 
-    s = min(s, 10)
+    s = min(s, 7)
+    return s, b
+
+
+# ============================================================
+# L1-7 结构节奏 (14) —— 新增维度（逻辑起承转合/节奏紧凑/结尾设计）
+# 风格自适应：情绪/故事文允许松散叙事，靠转折与收束句评估，而非硬卡小标题
+# ============================================================
+def score_structure(title, body, style):
+    b = []
+    s = 0
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    sub = [l for l in lines if SUBHEADING_RE.match(l)]
+    cap_sec = [l for l in lines if re.fullmatch(r"[A-Z]{3,}", l)]  # 用户式英文分节标签
+    # --- 逻辑结构 ---
+    if len(sub) >= 2 or len(cap_sec) >= 2:
+        s += 5
+        b.append(("结构清晰，有明确分节/小标题", 5))
+    elif 6 <= len(lines):
+        s += 2
+        b.append(("段落有层次，起承转合可读", 2))
+    # --- 开头抛核心问题/观点 ---
+    if re.search(r"问题|其实|我发现|我意识到|到底是什么|为什么|背后", body[:400]):
+        s += 2
+        b.append(("开头抛出核心问题/观点，主线清晰", 2))
+    # --- 结尾收束/升华（金句或软收束）---
+    tail = body[-300:]
+    last_line = lines[-1] if lines else ""
+    closing = re.search(r"总之|最后|所以|一句话|记住|其实|说真的|愿|希望|一起|慢慢|相信|别忘了|别让|坐稳|稳住|路", tail)
+    if closing or len(last_line) <= 25:
+        s += 4
+        b.append(("结尾有收束/升华句或金句，给读者余味", 4))
+    # --- 节奏紧凑度 ---
+    avg_line = sum(len(l) for l in lines) / len(lines) if lines else 0
+    if avg_line <= 120:
+        s += 3
+        b.append((f"节奏紧凑（段均{avg_line:.0f}字），不易走神", 3))
+    # --- 风格专属：情绪/故事文看转折递进 ---
+    if style in ("emotion", "narrative"):
+        if re.search(r"突然|那一刻|后来|转折|意识到|我才发现|说真的|反而", body):
+            s += 2
+            b.append(("情感有转折/递进，叙事不扁平", 2))
+    s = min(s, 14)
+    return s, b
+
+
+# ============================================================
+# L1-8 视觉呈现 (8) —— 新增维度（小标题/加粗/配图/留白）
+# 纯文本长文给提示；图文/排版稿可拿满
+# ============================================================
+def score_visual(body, style):
+    b = []
+    s = 0
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    sub = [l for l in lines if SUBHEADING_RE.match(l)]
+    cap_sec = [l for l in lines if re.fullmatch(r"[A-Z]{3,}", l)]
+    # --- 小标题/分节 ---
+    if len(sub) >= 2 or len(cap_sec) >= 2:
+        s += 5
+        b.append(("有分节小标题，扫读结构清晰", 5))
+    elif len(sub) >= 1 or len(cap_sec) >= 1:
+        s += 2
+        b.append(("有局部分节，结构尚可", 2))
+    # --- 加粗强调 ---
+    bold = len(re.findall(r"\*\*[^*]+\*\*|__[^_]+__", body))
+    if bold >= 2:
+        s += 2
+        b.append(("用了加粗强调关键信息", 2))
+    # --- 配图/视觉元素 ---
+    if re.search(r"!\[|图片|配图|附图|图：|img|http[s]?://[^\s]+\.(?:png|jpg|jpeg|gif|webp)", body):
+        s += 1
+        b.append(("含配图/视觉元素，提升停留", 1))
+    s = min(s, 8)
     return s, b
 
 
@@ -618,6 +715,27 @@ def compliance_check(title, body, track):
             issues.append({"line": "医疗绝对化表述", "severity": "warn",
                            "hits": med[:5],
                            "fix": "避免'治愈/根治'等绝对化疗效承诺。"})
+    # 多平台极限词/违禁（公众号+小红书+抖音共通雷区，warn 级为主）
+    plat = [w for w in BANNED_ABSOLUTE if w in text]
+    if plat:
+        issues.append({"line": "平台极限词(小红书/抖音严打)", "severity": "warn",
+                       "hits": plat[:6],
+                       "fix": "慎用'最/第一/绝对/国家级'等极限词，易被限流或判违规。"})
+    med2 = [w for w in BANNED_MEDICAL if w in text]
+    if med2:
+        issues.append({"line": "医疗功效词(多平台禁)", "severity": "warn",
+                       "hits": med2[:5],
+                       "fix": "避免'治疗/治愈/抗癌'等医疗功效承诺。"})
+    ind = [w for w in BANNED_INDUCE if w in text]
+    if ind:
+        issues.append({"line": "诱导转化词(多平台禁)", "severity": "warn",
+                       "hits": ind[:5],
+                       "fix": "避免'私信/加微信/限时/秒杀'等硬诱导，改用软引导。"})
+    fal = [w for w in BANNED_FALSE if w in text]
+    if fal:
+        issues.append({"line": "虚假承诺词", "severity": "block",
+                       "hits": fal[:5],
+                       "fix": "删除'保证有效/稳赚不赔/无效退款'等承诺性表述。"})
     return issues
 
 
@@ -625,40 +743,65 @@ def compliance_check(title, body, track):
 # L4 反AI味检测
 # ============================================================
 def ai_smell_check(title, body):
+    """量化反AI味检测：返回 (penalty 0-12, risk 0-100 越高越像AI, findings)。
+    综合：黑话密度、空泛修饰、开头AI腔、排比三连、绝对化对比、句式均匀度；
+    口语化/对话感作为反向信号冲抵。"""
+    import statistics
     findings = []
     penalty = 0
     text = title + "\n" + body
-    ai_open = sum(1 for w in AI_OPENING if w in body[:200])
-    if ai_open:
-        penalty += 3
-        findings.append(f"开头AI腔×{ai_open}（如'在当今/随着'）")
+    # 1. 黑话/套话密度（按千字）
     ai_w = sum(1 for w in AI_WORDS if w in text)
-    if ai_w >= 3:
-        penalty += 3
-        findings.append(f"全文堆砌互联网黑话×{ai_w}（赋能/闭环/底层逻辑…）")
+    if ai_w:
+        d = ai_w / max(1.0, len(text) / 1000.0)
+        if d >= 2:
+            penalty += 4
+            findings.append(f"互联网黑话密度偏高（{ai_w}处/千字），疑似AI润色")
+        elif d >= 0.8:
+            penalty += 2
+            findings.append(f"含黑话{ai_w}处，建议换成大白话")
+    # 2. 空泛修饰
     empty = sum(1 for w in EMPTY_MODIFIERS if w in text)
     if empty:
         penalty += 2
         findings.append(f"空泛修饰词×{empty}（岁月静好/流光溢彩…）")
+    # 3. 开头AI腔
+    ai_open = sum(1 for w in AI_OPENING if w in body[:200])
+    if ai_open:
+        penalty += 3
+        findings.append(f"开头AI腔×{ai_open}（如'在当今/随着'）")
+    # 4. 排比三连
     trips = len(TRIPLE_PATTERN.findall(body))
     if trips >= 8:
         penalty += 2
         findings.append(f"排比三连句式过多×{trips}，机械感重")
+    # 5. 绝对化对比词（模板腔）
+    ab = sum(1 for w in ABSOLUTE_CLAIM if w in text)
+    if ab >= 2:
+        penalty += 2
+        findings.append(f"绝对化表述×{ab}（一定/必须/所有人都…），像模板")
+    # 6. 句式均匀度（标准差过低→AI节奏）
     segs = [s for s in re.split(r"[。！？!?]", body) if len(s.strip()) > 4]
     if len(segs) >= 6:
         lens = [len(s) for s in segs]
         avg = sum(lens) / len(lens)
-        similar = sum(1 for L in lens if abs(L - avg) <= 3)
-        if similar / len(lens) > 0.6:
+        sd = statistics.pstdev(lens) if len(lens) > 1 else 0
+        cv = sd / avg if avg else 0
+        if cv < 0.25:
             penalty += 2
-            findings.append("句式高度雷同，疑似AI生成节奏")
-    return min(penalty, 12), findings
+            findings.append("句式长短高度均匀，疑似AI生成节奏")
+    # 7. 口语化/对话感（反向冲抵）
+    if re.search(r"[？?]|“|”|你说|我说|其实|说真的|讲真|跟你说|咱|爷们|哥们", text):
+        penalty = max(0, penalty - 2)
+        findings.append("有口语化/对话感，行文更自然（-2）")
+    risk = min(100, round(penalty / 12.0 * 100))
+    return min(penalty, 12), risk, findings
 
 
 # ============================================================
 # L2 阅读量预测
 # ============================================================
-def predict_reads(fans, open_rate, score, track):
+def predict_reads(fans, open_rate, score, track, genes=None):
     base = open_rate if open_rate else TRACK_BASE_OPEN_RATE.get(track, 5.5)
     factor = 0.6 + (score / 100.0) * 0.8
     eff = base * factor
@@ -666,12 +809,64 @@ def predict_reads(fans, open_rate, score, track):
     reads = int(fans * eff / 100.0)
     lo = int(reads * 0.7)
     hi = int(reads * 1.4)
+    # 算法细化：读完率 / 分享率 / 进入流量池概率
+    completion = round(min(0.85, 0.25 + (score / 100.0) * 0.65), 2)
+    social = (genes["social"] / 100.0) if genes else 0.3
+    share = round(min(0.12, 0.008 + social * 0.10), 3)
+    pool_level = "高" if score >= 75 else ("中" if score >= 55 else "低")
+    pool_prob = round(min(0.92, score / 100.0 * 0.95), 2)
     return {
         "base_open_rate": round(base, 2),
         "eff_open_rate": round(eff, 2),
         "predict": reads,
         "range": [lo, hi],
+        "completion_rate": completion,
+        "share_rate": share,
+        "pool_level": pool_level,
+        "pool_prob": pool_prob,
     }
+
+
+# ============================================================
+# L2+ 爆款四基因（情绪/实用/身份/社交货币）
+# ------------------------------------------------------------
+# 用"四基因"透镜重评选题势能与内容价值：命中越多基因，越具备自发传播力。
+# 每基因 0-100，输出画像供报告展示，并给选题维度做轻度加成。
+# ============================================================
+GENE_KEYS = {"emotion": "情绪共鸣", "utility": "实用价值", "identity": "身份认同", "social": "社交货币"}
+
+
+def viral_genes(title, body, style):
+    text = title + "\n" + body
+    # 情绪共鸣：冲突/悬念/焦虑类词密度
+    emo = sum(1 for w in EMOTION_CONFLICT + SUSPENSE_WORDS +
+              ["焦虑", "迷茫", "孤独", "累", "内耗", "心累", "委屈", "难受", "怕", "落后", "着急", "慌"]
+              if w in text)
+    g_emotion = min(100, emo * 9)
+    # 实用价值：方法论/清单/数据/建议（需 ≥2 处方法信号或含数据，避免单字误判）
+    method_hits = len(re.findall(
+        r"\d+[.、]|第一|第二|步骤|三步|方法|技巧|攻略|模板|清单|如何|怎样|实操", body))
+    util = 0
+    if method_hits >= 2 or re.search(r"\d|%|倍", text):
+        util += 45
+    if re.search(r"\d|%|倍", text):
+        util += 20
+    if re.search(r"建议|应该|可以|试试|记住|做这|别再|一定要", body):
+        util += 20
+    g_utility = min(100, util)
+    # 身份认同："我也是/我们"群体归属（按出现频次计，重复越多归属感越强）
+    grp = sum(text.count(w) for w in ["我们", "大家", "普通人", "我也是", "一样", "身边", "每个",
+                                      "打工人", "宝妈", "中年", "年轻人", "老年人"])
+    g_identity = min(100, grp * 11)
+    # 社交货币：让人想转发/显得有见识
+    soc = 0
+    if re.search(r"转|分享|收藏|发给|朋友圈|看懂|真相|认知|格局|没想到|居然|破防|扎心", text):
+        soc += 50
+    if g_emotion >= 40 or re.search(r"真实|清醒|通透|看完|句句|说到心", text):
+        soc += 30
+    g_social = min(100, soc)
+    return {"emotion": g_emotion, "utility": g_utility,
+            "identity": g_identity, "social": g_social}
 
 
 # ============================================================
@@ -806,11 +1001,19 @@ def detect(title, body, fans=10000, open_rate=None, track=None):
     st, bt = score_title(title, track)
     so, bo = score_opening(title, body, track)
     sc, bc = score_content(title, body, track, style_id)
+    sst, bst = score_structure(title, body, style_id)
     stp, btp = score_topic(title, body, track, style_id)
     srd, brd = score_readability(body, track)
+    svi, bvi = score_visual(body, style_id)
     sin, bin_ = score_interaction(body, style_id)
-    raw = st + so + sc + stp + srd + sin
-    penalty, ai_find = ai_smell_check(title, body)
+    # 爆款四基因（命中则轻度加成选题势能）
+    genes = viral_genes(title, body, style_id)
+    gene_max = max(genes.values())
+    if gene_max >= 60:
+        stp = min(DIM_FULL["topic"], stp + 2)
+        btp.append(("命中爆款基因（情绪/实用/身份/社交货币），传播势能强", 2))
+    raw = st + so + sc + sst + stp + srd + svi + sin
+    penalty, ai_risk, ai_find = ai_smell_check(title, body)
     total = max(0, min(100, raw - penalty))
     level = "C"
     for k in ["S", "A", "B", "C"]:
@@ -818,7 +1021,7 @@ def detect(title, body, fans=10000, open_rate=None, track=None):
             level = k
             break
     issues = compliance_check(title, body, track)
-    pred = predict_reads(fans, open_rate, total, track)
+    pred = predict_reads(fans, open_rate, total, track, genes)
     audience = simulate_audience(title, body, track, sin)
     return {
         "title": title,
@@ -828,18 +1031,19 @@ def detect(title, body, fans=10000, open_rate=None, track=None):
         "style_name": style_name,
         "style_scores": style_scores,
         "scores": {
-            "title": st, "opening": so, "content": sc,
-            "topic": stp, "readability": srd, "interaction": sin,
+            "title": st, "opening": so, "content": sc, "structure": sst,
+            "topic": stp, "readability": srd, "visual": svi, "interaction": sin,
             "raw": raw, "ai_penalty": penalty, "total": total,
         },
         "breakdowns": {
-            "title": bt, "opening": bo, "content": bc,
-            "topic": btp, "readability": brd, "interaction": bin_,
+            "title": bt, "opening": bo, "content": bc, "structure": bst,
+            "topic": btp, "readability": brd, "visual": bvi, "interaction": bin_,
         },
         "level": level,
         "level_desc": LEVELS[level][1],
         "compliance": issues,
-        "ai_smell": {"penalty": penalty, "findings": ai_find},
+        "ai_smell": {"penalty": penalty, "risk": ai_risk, "findings": ai_find},
+        "genes": genes,
         "predict": pred,
         "audience": audience,
     }
@@ -850,10 +1054,8 @@ def detect(title, body, fans=10000, open_rate=None, track=None):
 # ============================================================
 def build_suggestions(r):
     """汇总可执行的改进意见，按 P0(必改) > P1(建议改) > P2(优化) 排序"""
-    full = {"title": 25, "opening": 20, "content": 20, "topic": 15,
-            "readability": 10, "interaction": 10}
-    names = {"title": "标题钩子力", "opening": "开头钩子力", "content": "内容价值结构",
-             "topic": "选题赛道匹配", "readability": "阅读体验", "interaction": "互动引导"}
+    full = DIM_FULL
+    names = DIM_NAMES
     sugg = []
     # 1. 合规红线
     for it in r["compliance"]:
@@ -862,7 +1064,7 @@ def build_suggestions(r):
         if it.get("fix"):
             detail += " ｜ " + it["fix"]
         sugg.append({"pri": pr, "title": it["line"], "detail": detail})
-    # 2. 六维短板
+    # 2. 八维短板
     for key, f in full.items():
         v = r["scores"][key]
         ratio = v / f
@@ -872,6 +1074,9 @@ def build_suggestions(r):
             pr, tag = "P1", "有提升空间"
         else:
             continue
+        # 视觉呈现对情绪/故事文体非必需，不强制 P0
+        if key == "visual" and r["style_id"] in ("emotion", "narrative"):
+            pr, tag = "P2", "本体裁非必需"
         misses = [lbl for lbl, d in r["breakdowns"][key] if d <= 0]
         detail = f"当前 {v}/{f}（{tag}）。"
         detail += (" 待补强：" + "；".join(misses)) if misses else (" " + dim_fix(key, r["style_id"]))
@@ -885,6 +1090,19 @@ def build_suggestions(r):
         tip = FEATURE_TIP.get(aud[-1]["weak"], "调整内容取向以贴合该类读者")
         sugg.append({"pri": "P2", "title": "撬动「" + aud[-1]["name"] + "」",
                      "detail": "其偏好：" + aud[-1]["style"] + "。" + tip})
+    # 4.5 爆款四基因撬动
+    genes = r.get("genes") or {}
+    if genes:
+        weakest = min(genes, key=genes.get)
+        if genes[weakest] < 50:
+            gtip = {
+                "emotion": "加强情绪冲突与共鸣细节，戳中普遍情感点",
+                "utility": "补充可操作方法论/清单/具体数据，提升干货感",
+                "identity": "强化群体身份认同（我们/我也是/打工人），制造归属感",
+                "social": "增加金句/反转/扎心观点，让人想转发朋友圈",
+            }.get(weakest, "强化该基因以提升自发传播力")
+            sugg.append({"pri": "P2", "title": "补强爆款基因·" + GENE_KEYS[weakest],
+                         "detail": gtip})
     order = {"P0": 0, "P1": 1, "P2": 2}
     sugg.sort(key=lambda x: order[x["pri"]])
     return sugg
@@ -892,14 +1110,12 @@ def build_suggestions(r):
 
 def build_strengths(r):
     """提取本篇亮点（正向信号），用于在报告中高亮，避免只暴露短板。"""
-    full = {"title": 25, "opening": 20, "content": 20, "topic": 15,
-            "readability": 10, "interaction": 10}
-    names = {"title": "标题钩子力", "opening": "开头钩子力", "content": "内容价值结构",
-             "topic": "选题赛道匹配", "readability": "阅读体验", "interaction": "互动引导"}
+    full = DIM_FULL
+    names = DIM_NAMES
     items = []
     # 0. 体裁适配说明（透明化：评分已按文章实际体裁调整，避免用干货尺子量情绪文）
     items.append({"title": "评分体裁适配",
-                  "detail": f"识别为「{r['style_name']}」体裁，六维已按该风格标准打分，不再以干货文/方法论文的尺子硬量"})
+                  "detail": f"识别为「{r['style_name']}」体裁，八维评分已按该风格标准打分（含结构节奏/视觉呈现），不再以干货文尺子硬量"})
     # 1. 高分维度（>=75%）取前若干，附已命中的具体点
     ranked = sorted(((k, r["scores"][k] / full[k]) for k in full),
                     key=lambda x: x[1], reverse=True)
@@ -923,6 +1139,12 @@ def build_strengths(r):
     if aud and aud[0]["resonance"] >= 60:
         items.append({"title": "精准命中受众",
                       "detail": f"「{aud[0]['name']}」共鸣 {aud[0]['resonance']}，传播势能强"})
+    # 4.5 爆款基因突出
+    genes = r.get("genes") or {}
+    hot = [GENE_KEYS[k] for k, v in genes.items() if v >= 70]
+    if hot:
+        items.append({"title": "爆款基因突出",
+                      "detail": "强基因：" + "、".join(hot) + "，具备自发传播潜力"})
     return items[:5]
 
 
@@ -936,17 +1158,18 @@ def fmt_md(r):
     L.append(f"**识别赛道**：`{r['track_id']}` {r['track_name']}")
     L.append(f"**文章风格**：`{r['style_id']}` {r['style_name']}（评分按此风格适配）")
     L.append(f"**综合得分**：**{r['scores']['total']}/100**  → 等级 **{r['level']}**（{r['level_desc']}）\n")
-    L.append("## L1 内容六维评分")
-    dims = [("标题钩子力", "title", 25), ("开头钩子力", "opening", 20),
-            ("内容价值结构", "content", 20), ("选题赛道匹配", "topic", 15),
-            ("阅读体验", "readability", 10), ("互动引导", "interaction", 10)]
-    for name, key, full in dims:
+    L.append("## L1 内容八维评分")
+    for key in ["title", "opening", "content", "structure", "topic",
+                "readability", "visual", "interaction"]:
+        name = DIM_NAMES[key]
+        full = DIM_FULL[key]
         v = r["scores"][key]
         bar = "█" * int(v / full * 20)
         L.append(f"- {name}：{v}/{full} `{bar}`")
-    L.append(f"- AI味扣分：-{r['scores']['ai_penalty']}")
+    L.append(f"- AI味扣分：-{r['scores']['ai_penalty']}（风险分 {r['ai_smell']['risk']}/100）")
     L.append("\n## 加分/扣分明细")
-    for key in ["title", "opening", "content", "topic", "readability", "interaction"]:
+    for key in ["title", "opening", "content", "structure", "topic",
+                "readability", "visual", "interaction"]:
         for label, delta in r["breakdowns"][key]:
             sign = "+" if delta > 0 else ""
             L.append(f"- [{key}] {label} （{sign}{delta}）")
@@ -959,6 +1182,7 @@ def fmt_md(r):
             fix = f" → 建议：{it['fix']}" if it.get("fix") else ""
             L.append(f"- {tag} {it['line']}（命中：{', '.join(it['hits'])}）{fix}")
     L.append("\n## L4 反AI味检测")
+    L.append(f"- AI味风险分：**{r['ai_smell']['risk']}/100**（越高越像AI生成）")
     if r["ai_smell"]["findings"]:
         for f in r["ai_smell"]["findings"]:
             L.append(f"- ⚠️ {f}")
@@ -968,6 +1192,13 @@ def fmt_md(r):
     p = r["predict"]
     L.append(f"- 基准打开率：{p['base_open_rate']}%  →  有效打开率：{p['eff_open_rate']}%")
     L.append(f"- 预计阅读：约 **{p['predict']}**（区间 {p['range'][0]}~{p['range'][1]}）")
+    L.append(f"- 预计读完率：{int(p['completion_rate']*100)}% ｜ 分享率：{int(p['share_rate']*100)}%")
+    L.append(f"- 进入流量池概率：{p['pool_level']}（约 {int(p['pool_prob']*100)}%）｜ 黄金6小时：发布后6h内数据决定推荐量级，建议此时段推送并互动")
+    L.append("\n## 爆款四基因（传播势能透镜）")
+    genes = r["genes"]
+    for k, v in genes.items():
+        bar = "█" * int(v / 100 * 20)
+        L.append(f"- {GENE_KEYS[k]}：{v}/100 `{bar}`")
     L.append("\n## L2+ 受众共鸣画像（启发式模拟）")
     L.append("> 说明：本地启发式模拟，非真实阅读数据。按年龄+行业+阅读性格定义读者原型，")
     L.append("> 用文章特征匹配其偏好，估算点开/读完/互动概率，输出共鸣画像。")
@@ -1001,9 +1232,9 @@ def fmt_html(r):
     aud = r["audience"]
     top, bottom = aud[0], aud[-1]
 
-    dims = [("标题钩子力", "title", 25), ("开头钩子力", "opening", 20),
-            ("内容价值结构", "content", 20), ("选题赛道匹配", "topic", 15),
-            ("阅读体验", "readability", 10), ("互动引导", "interaction", 10)]
+    dims = [(DIM_NAMES[k], k, DIM_FULL[k]) for k in
+            ["title", "opening", "content", "structure", "topic",
+             "readability", "visual", "interaction"]]
     bars_html = ""
     for name, key, full in dims:
         v = r["scores"][key]
@@ -1042,6 +1273,17 @@ def fmt_html(r):
     else:
         st_html = ""
 
+    genes = r["genes"]
+    gene_rows = ""
+    for k in ["emotion", "utility", "identity", "social"]:
+        v = genes[k]
+        cls = "hot" if v >= 60 else ("cold" if v < 35 else "")
+        gene_rows += (f'<div class="row"><span class="lbl">{GENE_KEYS[k]}</span>'
+                      f'<div class="track"><div class="fill {cls}" style="width:{v}%"></div></div>'
+                      f'<span class="val">{v}</span></div>')
+    genes_html = (f'<div class="card rise" style="animation-delay:.18s"><div class="label">爆款四基因 · 传播势能</div>'
+                  f'{gene_rows}</div>')
+
     aud_rows = ""
     for a in aud:
         cls = "hot" if a is top else ("cold" if a is bottom else "")
@@ -1068,18 +1310,20 @@ def fmt_html(r):
                      f'<b>{it["line"]}</b>'
                      f'<div class="muted">命中：{", ".join(it["hits"])}</div>{fix}</div></div>')
 
+    ai_risk = r["ai_smell"]["risk"]
     if r["ai_smell"]["findings"]:
-        ai = ""
+        ai = f'<p class="muted">AI味风险分 <b>{ai_risk}/100</b>（越高越像AI生成）</p>'
         for f in r["ai_smell"]["findings"]:
             ai += f'<div class="line warn"><span class="dot"></span><div>{f}</div></div>'
     else:
-        ai = '<p class="ok">无明显AI腔</p>'
+        ai = f'<p class="ok">无明显AI腔（风险分 {ai_risk}/100）</p>'
 
     lc = {"S": "#30D158", "A": "#0A84FF", "B": "#FF9F0A", "C": "#FF453A"}[r["level"]]
     score = r["scores"]["total"]
     stats_html = (f'<div class="stats">'
                   f'<div class="stat"><div class="stat-v">{p["predict"]}</div><div class="stat-l">预计阅读</div></div>'
                   f'<div class="stat"><div class="stat-v">{p["eff_open_rate"]}%</div><div class="stat-l">有效打开率</div></div>'
+                  f'<div class="stat"><div class="stat-v sm">{p["pool_level"]}</div><div class="stat-l">流量池 {int(p["pool_prob"]*100)}%</div></div>'
                   f'<div class="stat"><div class="stat-v sm">{top["name"].split("·")[0]}</div><div class="stat-l">最强受众</div></div>'
                   f'</div>')
 
@@ -1165,13 +1409,14 @@ transition:background .2s,color .2s,border-color .2s;flex:none}
       <div class="hero-meta">
         <span class="pill" style="background:{lc}22;color:{lc}">等级 {r['level']} · {r['level_desc']}</span>
         <span class="pill" style="background:rgba(94,92,230,.16);color:#9d9bff">体裁 {r['style_name']}</span>
-        <div class="verdict">综合评分 / 100 · 已按体裁适配</div>
+        <div class="verdict">综合评分 / 100 · 八维·已按体裁适配</div>
       </div>
     </div>
     {stats_html}
   </div>
-  <div class="card rise" style="animation-delay:.09s"><div class="label">六维评分</div>{bars_html}</div>
+  <div class="card rise" style="animation-delay:.09s"><div class="label">八维评分</div>{bars_html}</div>
   {st_html}
+  {genes_html}
   {sugg_html}
   {aud_html}
   <div class="card rise" style="animation-delay:.27s"><div class="label">合规红线 · 9条</div>{comp}</div>
@@ -1204,7 +1449,7 @@ function copied(btn){{
 
 
 def main():
-    ap = argparse.ArgumentParser(description="公众号文章发布前爆款检测 v2.0 全行业版")
+    ap = argparse.ArgumentParser(description="公众号文章发布前爆款检测 v2.2 全行业版")
     ap.add_argument("title")
     ap.add_argument("article")
     ap.add_argument("--fans", type=int, default=10000)
