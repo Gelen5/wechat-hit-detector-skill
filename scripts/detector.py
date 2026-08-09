@@ -1476,8 +1476,9 @@ def fmt_html(r):
     else:
         ai = f'<p class="ok">未发现明显模板化信号（风险分 {ai_risk}/100）</p>'
 
-    lc = {"S": "#30D158", "A": "#0A84FF", "B": "#FF9F0A", "C": "#FF453A"}[r["level"]]
     score = r["scores"]["total"]
+    # 按实际分数切换主色，不依赖等级名称。
+    lc = "#30D158" if score >= 80 else ("#0A84FF" if score >= 60 else ("#FF9F0A" if score >= 40 else "#FF453A"))
     predict_value = p["predict"] if p["predict"] is not None else "—"
     stats_html = (f'<div class="stats">'
                   f'<div class="stat"><div class="stat-v">{predict_value}</div><div class="stat-l">账号情景阅读</div></div>'
@@ -1504,9 +1505,9 @@ html{-webkit-text-size-adjust:100%}
 body{background:radial-gradient(1100px 720px at 50% -8%,#16161b 0%,#0a0a0c 46%,#000 100%);background-attachment:fixed;
 color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
 -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;max-width:820px;margin:0 auto;padding:56px 22px 90px;line-height:1.5}
-.card{background:var(--surface);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);
-border:1px solid var(--border);border-radius:24px;padding:28px 26px;margin:16px 0;
-box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 18px 44px -26px rgba(0,0,0,.85);animation:fadeUp .6s cubic-bezier(.2,.7,.2,1) both}
+.card{background:rgba(28,28,30,.52);backdrop-filter:blur(34px) saturate(180%);-webkit-backdrop-filter:blur(34px) saturate(180%);
+border:1px solid rgba(255,255,255,.16);border-radius:24px;padding:28px 26px;margin:16px 0;
+box-shadow:0 1px 0 rgba(255,255,255,.1) inset,0 18px 44px -26px rgba(0,0,0,.85),0 0 0 1px rgba(255,255,255,.025);animation:fadeUp .6s cubic-bezier(.2,.7,.2,1) both}
 .hero{padding:32px 30px}
 .label{font-size:11.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
 .title-main{font-size:25px;font-weight:600;letter-spacing:-.022em;line-height:1.28;margin-bottom:22px;color:#fff}
