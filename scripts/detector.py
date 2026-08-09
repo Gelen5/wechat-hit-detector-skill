@@ -1669,6 +1669,11 @@ def fmt_html(r):
 .modal{background:rgba(30,30,34,.38);backdrop-filter:blur(18px) saturate(115%);-webkit-backdrop-filter:blur(18px) saturate(115%)}.modal-card{background:#fff!important;border:1px solid rgba(60,60,67,.2);border-radius:26px;padding:34px 38px;box-shadow:0 32px 100px rgba(0,0,0,.28),0 1px 0 rgba(255,255,255,.95) inset}.modal-panel{background:#fff;min-height:100%}.modal-head{background:#fff;position:sticky;top:0;z-index:2;padding-top:2px}.panel-body{width:100%;max-width:820px;margin:0 auto}.scene-note{max-width:820px;margin:0 auto 4px}.score-row{max-width:820px;margin-left:auto;margin-right:auto}.suggestions{max-width:820px;margin:0 auto}.success{max-width:820px;margin:0 auto 12px}.note{max-width:820px;margin-left:auto;margin-right:auto}
 @media(max-width:680px){.modal-card{padding:25px 20px;border-radius:22px}.modal-head{padding-top:0}}
 """
+    css += """
+/* Modal content follows the approved compact sheet reference: auto-height, centered, no dead space. */
+.modal{align-items:center;justify-content:center;padding:28px}.modal-card{width:min(920px,calc(100vw - 64px));height:auto;min-height:0;max-height:calc(100vh - 56px);display:block;overflow:auto;padding:34px 44px;border-radius:28px;background:#fff!important}.modal-panel{height:auto;min-height:0}.modal-panel .modal-head{position:static;margin-bottom:28px;padding-bottom:22px}.panel-body{height:auto;min-height:0;overflow:visible;padding:0}.scenario-grid{grid-template-columns:repeat(3,1fr);gap:14px}.scenario-card{min-height:160px;padding:20px}.score-row{grid-template-columns:120px minmax(0,1fr) 58px;margin:20px 0}.bar{height:10px}.suggestions{grid-template-columns:1fr 1fr;gap:14px}.suggestion{min-height:150px;padding:20px}.success{margin-bottom:14px}.note{margin-top:14px}.subhead{margin:26px 0 14px}
+@media(max-width:680px){.modal{padding:10px}.modal-card{width:100%;max-height:calc(100vh - 20px);padding:25px 20px;border-radius:24px}.scenario-grid,.suggestions{grid-template-columns:1fr}.score-row{grid-template-columns:90px minmax(0,1fr) 48px;gap:10px}}
+"""
     panels = {
         "scene": ("阅读情景", scene_meta, scene_body),
         "score": ("评分细节", "八维评分 · 爆款四基因", f'{score_rows}<h3 class="subhead">爆款四基因</h3>{gene_rows}'),
