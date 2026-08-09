@@ -46,6 +46,18 @@ class DetectorRegressionTests(unittest.TestCase):
         result = detector.detect("普通的一天", "今天下班后回家，安静地吃了晚饭。", fans=None)
         self.assertIsNone(result["predict"]["predict"])
         self.assertEqual(result["predict"]["confidence"], "low")
+        self.assertEqual(
+            [item["fans"] for item in result["predict"]["scenario_reads"]],
+            [1000, 10000, 100000],
+        )
+
+    def test_oral_signal_is_positive_not_template_risk(self):
+        _, risk, findings = detector.ai_smell_check(
+            "我们都在等对方先开口",
+            "我妈问我最近怎么样，我说还行。其实我一点也不好。",
+        )
+        self.assertEqual(risk, 0)
+        self.assertTrue(any(f.startswith("✅ 自然表达加分") for f in findings))
 
     def test_finance_disclaimer_check_is_conditional(self):
         clean = detector.compliance_check("利率变化", "本文整理公开数据。", "finance")

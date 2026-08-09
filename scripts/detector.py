@@ -893,7 +893,7 @@ def ai_smell_check(title, body):
     # 7. 口语化/对话感（反向冲抵）
     if re.search(r"[？?]|“|”|你说|我说|其实|说真的|讲真|跟你说|咱|爷们|哥们", text):
         penalty = max(0, penalty - 2)
-        findings.append("有口语化/对话感，行文更自然（-2）")
+        findings.append("✅ 自然表达加分：有口语化/对话感（风险抵消 -2）")
     risk = min(100, round(penalty / 12.0 * 100))
     return min(penalty, 12), risk, findings
 
@@ -915,6 +915,7 @@ def predict_reads(fans, open_rate, score, track, genes=None):
     reads = None
     lo = None
     hi = None
+    scenario_reads = []
     if fans and fans > 0:
         reads = int(fans * eff / 100.0)
         lo = int(reads * 0.7)
@@ -925,6 +926,15 @@ def predict_reads(fans, open_rate, score, track, genes=None):
         else:
             confidence = "low"
             confidence_note = "粉丝数已提供，但打开率使用赛道基准，不代表账号实际表现。"
+    else:
+        # 无粉丝数时提供透明的规模情景，不冒充账号真实预测。
+        for assumed_fans in (1000, 10000, 100000):
+            estimate = int(assumed_fans * eff / 100.0)
+            scenario_reads.append({
+                "fans": assumed_fans,
+                "predict": estimate,
+                "range": [int(estimate * 0.7), int(estimate * 1.4)],
+            })
     # Text-only heuristics cannot identify real completion, share or platform
     # recommendation probabilities. Keep only a qualitative editorial signal.
     pool_level = "高" if score >= 75 else ("中" if score >= 55 else "低")
@@ -936,6 +946,7 @@ def predict_reads(fans, open_rate, score, track, genes=None):
         "range": [lo, hi],
         "confidence": confidence,
         "confidence_note": confidence_note,
+        "scenario_reads": scenario_reads,
         "completion_rate": None,
         "share_rate": None,
         "pool_level": pool_level,
@@ -1212,6 +1223,8 @@ def build_suggestions(r):
         sugg.append({"pri": pr, "title": "提升" + names[key], "detail": detail})
     # 3. 反AI味
     for f in r["ai_smell"]["findings"]:
+        if f.startswith("✅"):
+            continue
         sugg.append({"pri": "P2", "title": "降低模板化风险", "detail": f})
     # 4. 受众撬动
     aud = r["audience"]
@@ -1260,7 +1273,8 @@ def build_strengths(r):
         items.append({"title": "未命中已知词表",
                       "detail": "未触发当前规则词表；这不等于平台审核通过，仍需人工复核事实、来源和上下文"})
     # 3. 行文自然
-    if not r["ai_smell"]["findings"]:
+    findings = r["ai_smell"]["findings"]
+    if not findings or all(f.startswith("✅") for f in findings):
         items.append({"title": "行文自然",
                       "detail": "未检出明显AI腔，读者信任感更高"})
     # 4. 精准命中受众
@@ -1321,7 +1335,7 @@ def fmt_md(r):
     L.append(f"- 风格风险分：**{r['ai_smell']['risk']}/100**（越高越模板化；不代表 AI 来源概率）")
     if r["ai_smell"]["findings"]:
         for f in r["ai_smell"]["findings"]:
-            L.append(f"- ⚠️ {f}")
+            L.append(f"- {f if f.startswith('✅') else '⚠️ ' + f}")
     else:
         L.append("- ✅ 未发现明显模板化信号")
     L.append("\n## L2 阅读量预测")
@@ -1329,6 +1343,10 @@ def fmt_md(r):
     L.append(f"- 基准打开率：{p['base_open_rate']}%  →  有效打开率：{p['eff_open_rate']}%")
     if p['predict'] is None:
         L.append("- 阅读量：未估计（需要真实粉丝数；当前仅提供赛道基准情景）")
+        if p.get("scenario_reads"):
+            L.append("- 假设粉丝规模阅读情景（按有效打开率计算，仅供横向参考）：")
+            for item in p["scenario_reads"]:
+                L.append(f"  - {item['fans']:,} 粉丝：约 **{item['predict']:,}**（区间 {item['range'][0]:,}~{item['range'][1]:,}）")
     else:
         L.append(f"- 账号情景阅读量：约 **{p['predict']}**（区间 {p['range'][0]}~{p['range'][1]}）")
     L.append(f"- 预测可信度：**{p['confidence']}** · {p['confidence_note']}")
@@ -1453,7 +1471,8 @@ def fmt_html(r):
     if r["ai_smell"]["findings"]:
         ai = f'<p class="muted">写作风格风险 <b>{ai_risk}/100</b>（越高越模板化，不代表 AI 来源概率）</p>'
         for f in r["ai_smell"]["findings"]:
-            ai += f'<div class="line warn"><span class="dot"></span><div>{f}</div></div>'
+            cls = "positive" if f.startswith("✅") else "warn"
+            ai += f'<div class="line {cls}"><span class="dot"></span><div>{f}</div></div>'
     else:
         ai = f'<p class="ok">未发现明显模板化信号（风险分 {ai_risk}/100）</p>'
 
@@ -1466,6 +1485,16 @@ def fmt_html(r):
                   f'<div class="stat"><div class="stat-v sm">{p["pool_level"]}</div><div class="stat-l">文本传播信号</div></div>'
                   f'<div class="stat"><div class="stat-v sm">{top["name"].split("·")[0]}</div><div class="stat-l">最强受众</div></div>'
                   f'</div>')
+    scenario_html = ""
+    if p["predict"] is None and p.get("scenario_reads"):
+        cards = "".join(
+            f'<div class="scenario-item"><b>{item["fans"]:,}</b><span>粉丝</span>'
+            f'<strong>约 {item["predict"]:,}</strong><small>{item["range"][0]:,}~{item["range"][1]:,}</small></div>'
+            for item in p["scenario_reads"]
+        )
+        scenario_html = (f'<div class="scenario-note"><b>假设粉丝规模阅读情景</b>'
+                         f'<span>按有效打开率计算，仅供横向参考，不代表你的账号实际阅读量</span>'
+                         f'<div class="scenario-grid">{cards}</div></div>')
 
     css = """
 :root{--text:#f5f5f7;--muted:rgba(235,235,245,.56);--border:rgba(255,255,255,.09);
@@ -1491,6 +1520,12 @@ box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 18px 44px -26px rgba(0,0,0,.85)
 .stat-v{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .stat-v.sm{font-size:17px;font-weight:600}
 .stat-l{font-size:12px;color:var(--muted);margin-top:4px;letter-spacing:.02em}
+.scenario-note{margin-top:14px;padding:14px 16px;border:1px solid rgba(10,132,255,.2);border-radius:16px;background:rgba(10,132,255,.06);font-size:13px}
+.scenario-note>b{display:block;color:#cfe0ff;font-size:13px;margin-bottom:3px}
+.scenario-note>span{display:block;color:var(--muted);font-size:11.5px}
+.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.scenario-item{display:flex;flex-direction:column;gap:2px;padding:10px 11px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.03)}
+.scenario-item b{font-size:13px}.scenario-item span,.scenario-item small{color:var(--muted);font-size:11px}.scenario-item strong{font-size:16px;color:#fff;margin-top:4px}
 .row{display:flex;align-items:center;gap:14px;margin:11px 0}
 .lbl{width:104px;font-size:13px;color:var(--muted);flex:none}
 .track{flex:1;height:7px;background:rgba(255,255,255,.08);border-radius:5px;overflow:hidden}
@@ -1527,6 +1562,8 @@ transition:background .2s,color .2s,border-color .2s;flex:none}
 .dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:6px;background:var(--orange)}
 .line.block .dot{background:var(--red)}
 .line.warn .dot{background:var(--orange)}
+.line.positive .dot{background:var(--green)}
+.line.positive{color:#d8ffe2}
 .line b{font-weight:600;font-size:14px}
 .muted{color:var(--muted);font-size:13px;margin-top:3px;line-height:1.5}
 .fix{display:inline-block;color:#9fd0ff;font-size:12.5px;margin-top:5px}
@@ -1553,6 +1590,7 @@ transition:background .2s,color .2s,border-color .2s;flex:none}
       </div>
     </div>
     {stats_html}
+    {scenario_html}
   </div>
   <div class="card rise" style="animation-delay:.09s"><div class="label">八维评分</div>{bars_html}</div>
   {st_html}
