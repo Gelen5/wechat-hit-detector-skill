@@ -1665,6 +1665,10 @@ def fmt_html(r):
 .modal{display:flex;visibility:hidden;opacity:0;pointer-events:none;transition:opacity .22s ease}.modal.open{visibility:visible;opacity:1;pointer-events:auto}.modal-card{width:min(920px,calc(100vw - 56px));height:min(720px,calc(100vh - 56px));min-height:520px;max-height:calc(100vh - 56px);display:flex;flex-direction:column;overflow:hidden}.modal-panel{display:none;height:100%}.modal-panel .modal-head{flex:none}.panel-body{min-height:0;height:calc(100% - 96px);overflow:auto;padding:0 6px 8px 0}.scene-note{padding:18px 20px;border-radius:17px;background:#eef5ff;border:1px solid rgba(0,122,255,.2);color:#24518a;font-size:14px;line-height:1.7}.scene-note>b{display:block;font-size:15px;margin-bottom:3px}.scene-note>span{display:block;color:#6e6e73;font-size:12px}.subhead{font-size:18px;margin:28px 0 12px}.modal-panel .success,.modal-panel .suggestions,.modal-panel .score-row,.modal-panel .scenario-grid{flex:none}
 @media(max-width:680px){.modal-card{width:100%;height:calc(100vh - 20px);min-height:0;max-height:none}.panel-body{height:calc(100% - 92px)}}
 """
+    css += """
+.modal{background:rgba(30,30,34,.38);backdrop-filter:blur(18px) saturate(115%);-webkit-backdrop-filter:blur(18px) saturate(115%)}.modal-card{background:#fff!important;border:1px solid rgba(60,60,67,.2);border-radius:26px;padding:34px 38px;box-shadow:0 32px 100px rgba(0,0,0,.28),0 1px 0 rgba(255,255,255,.95) inset}.modal-panel{background:#fff;min-height:100%}.modal-head{background:#fff;position:sticky;top:0;z-index:2;padding-top:2px}.panel-body{width:100%;max-width:820px;margin:0 auto}.scene-note{max-width:820px;margin:0 auto 4px}.score-row{max-width:820px;margin-left:auto;margin-right:auto}.suggestions{max-width:820px;margin:0 auto}.success{max-width:820px;margin:0 auto 12px}.note{max-width:820px;margin-left:auto;margin-right:auto}
+@media(max-width:680px){.modal-card{padding:25px 20px;border-radius:22px}.modal-head{padding-top:0}}
+"""
     panels = {
         "scene": ("阅读情景", scene_meta, scene_body),
         "score": ("评分细节", "八维评分 · 爆款四基因", f'{score_rows}<h3 class="subhead">爆款四基因</h3>{gene_rows}'),
