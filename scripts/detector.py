@@ -1674,6 +1674,11 @@ def fmt_html(r):
 .modal{align-items:center;justify-content:center;padding:28px}.modal-card{width:min(920px,calc(100vw - 64px));height:auto;min-height:0;max-height:calc(100vh - 56px);display:block;overflow:auto;padding:34px 44px;border-radius:28px;background:#fff!important}.modal-panel{height:auto;min-height:0}.modal-panel .modal-head{position:static;margin-bottom:28px;padding-bottom:22px}.panel-body{height:auto;min-height:0;overflow:visible;padding:0}.scenario-grid{grid-template-columns:repeat(3,1fr);gap:14px}.scenario-card{min-height:160px;padding:20px}.score-row{grid-template-columns:120px minmax(0,1fr) 58px;margin:20px 0}.bar{height:10px}.suggestions{grid-template-columns:1fr 1fr;gap:14px}.suggestion{min-height:150px;padding:20px}.success{margin-bottom:14px}.note{margin-top:14px}.subhead{margin:26px 0 14px}
 @media(max-width:680px){.modal{padding:10px}.modal-card{width:100%;max-height:calc(100vh - 20px);padding:25px 20px;border-radius:24px}.scenario-grid,.suggestions{grid-template-columns:1fr}.score-row{grid-template-columns:90px minmax(0,1fr) 48px;gap:10px}}
 """
+    css += """
+/* Hard width lock: every popup uses the same wide centered sheet, never a content-sized column. */
+.modal-card{width:calc(100vw - 48px)!important;max-width:920px!important;min-width:0!important;margin:0 auto}.modal-panel{width:100%!important}.modal-panel .modal-head{width:100%!important}.panel-body{width:100%!important;max-width:none!important}.score-row{width:100%!important;grid-template-columns:150px minmax(0,1fr) 64px!important}.scenario-grid,.suggestions,.success,.note{width:100%!important;max-width:none!important}
+@media(max-width:680px){.modal-card{width:calc(100vw - 24px)!important;max-width:none!important}.score-row{grid-template-columns:92px minmax(0,1fr) 50px!important}}
+"""
     panels = {
         "scene": ("阅读情景", scene_meta, scene_body),
         "score": ("评分细节", "八维评分 · 爆款四基因", f'{score_rows}<h3 class="subhead">爆款四基因</h3>{gene_rows}'),
