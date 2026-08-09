@@ -1682,6 +1682,25 @@ def fmt_html(r):
     css += """
 .scene-caption{margin-bottom:18px}.scene-caption b{display:block;font-size:15px;color:#24518a;margin-bottom:3px}.scene-caption span{display:block;color:#6e6e73;font-size:12px}
 """
+    css += """
+/* Reference modal geometry: a centered white sheet with stable margins on desktop. */
+.modal{padding:32px!important;box-sizing:border-box!important}
+.modal-card{width:920px!important;max-width:calc(100% - 64px)!important;min-width:0!important;margin:0 auto!important;box-sizing:border-box!important;border-radius:28px!important}
+.modal-panel{width:920px!important;max-width:calc(100% - 64px)!important;min-width:0!important;max-height:calc(100vh - 64px)!important;margin:0 auto!important;overflow:auto!important;background:#fff!important;border:1px solid rgba(60,60,67,.16)!important;border-radius:28px!important;box-shadow:0 28px 90px rgba(0,0,0,.22),0 1px 0 rgba(255,255,255,.95) inset!important;box-sizing:border-box!important}
+.modal-panel .modal-head,.panel-body{width:100%!important;max-width:none!important;box-sizing:border-box!important}
+.modal-panel .modal-head{padding:42px 44px 28px!important}
+.panel-body{padding:30px 44px 40px!important}
+.score-row{grid-template-columns:120px minmax(0,1fr) 64px!important;column-gap:16px!important}
+.score-row .bar{min-width:0!important}
+@media(max-width:680px){
+  .modal{padding:12px!important}
+  .modal-card{width:calc(100% - 24px)!important;max-width:calc(100% - 24px)!important;border-radius:22px!important}
+  .modal-panel{width:calc(100% - 24px)!important;max-width:calc(100% - 24px)!important;border-radius:22px!important;max-height:calc(100vh - 24px)!important}
+  .modal-panel .modal-head{padding:28px 24px 22px!important}
+  .panel-body{padding:24px!important}
+  .score-row{grid-template-columns:92px minmax(0,1fr) 50px!important;column-gap:10px!important}
+}
+"""
     panels = {
         "scene": ("阅读情景", scene_meta, scene_body),
         "score": ("评分细节", "八维评分与文章真正的扣分原因", f'{score_rows}<div class="note">最关键的判断：正文真正写的是“我如何逃避未完成的事”，需要让标题与这个核心矛盾形成更直接的承接。</div>'),
