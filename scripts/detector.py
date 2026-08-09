@@ -1643,8 +1643,15 @@ def fmt_html(r):
     else:
         scene_body = '<div class="empty">提供粉丝数后显示账号情景阅读量。</div>'
         scene_meta = "需要账号粉丝数"
-    dims = [(DIM_NAMES[k], k, DIM_FULL[k]) for k in ["title", "opening", "content", "structure", "topic", "interaction"]]
+    # Keep the modal aligned with the engine and the Markdown report: all eight dimensions.
+    score_keys = ["title", "opening", "content", "structure", "topic", "readability", "visual", "interaction"]
+    dims = [(DIM_NAMES[k], k, DIM_FULL[k]) for k in score_keys]
     score_rows = "".join(f'<div class="score-row"><span>{name}</span><div class="bar"><i style="width:{max(4, int(r["scores"][key] / full * 100))}%"></i></div><b>{r["scores"][key]}<em>/{full}</em></b></div>' for name, key, full in dims)
+    weakest_key = min(score_keys, key=lambda key: r["scores"][key] / DIM_FULL[key])
+    weakest_name = DIM_NAMES[weakest_key]
+    weakest_value = r["scores"][weakest_key]
+    weakest_full = DIM_FULL[weakest_key]
+    score_note = f'最需要优先复核：{weakest_name}（{weakest_value}/{weakest_full}）。先修正这一项，再看整体传播表现。'
     suggestions = build_suggestions(r)
     if suggestions:
         suggestion_cards = "".join(f'<article class="suggestion"><small>{s["pri"]} · {esc(s["title"])}</small><h3>{esc(s["title"])}</h3><p>{esc(s["detail"])}</p></article>' for s in suggestions[:4])
@@ -1703,7 +1710,7 @@ def fmt_html(r):
 """
     panels = {
         "scene": ("阅读情景", scene_meta, scene_body),
-        "score": ("评分细节", "八维评分与文章真正的扣分原因", f'{score_rows}<div class="note">最关键的判断：正文真正写的是“我如何逃避未完成的事”，需要让标题与这个核心矛盾形成更直接的承接。</div>'),
+        "score": ("评分细节", "八维评分与文章真正的扣分原因", f'{score_rows}<div class="note">{esc(score_note)}</div>'),
         "action": ("改稿方向", "先看最值得改的地方", f'<div class="suggestions">{suggestion_cards}</div>'),
         "risk": ("风险复核", "合规 · 写作风格", risk_body),
         "audience": ("受众画像", "启发式参考", f'{audience_rows}<div class="note">最容易被击中：{esc(top["name"])}（{top["resonance"]}）。最不感冒：{esc(bottom["name"])}（{bottom["resonance"]}）。</div>'),
