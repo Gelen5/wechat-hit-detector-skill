@@ -2,7 +2,7 @@
 
 > 来源入口：微信公众平台官方文档（https://mp.weixin.qq.com/）。本文件是本地整理摘要，不是官方原文；发布前应以当前平台规则和后台提示为准。
 > 用途：爆款检测工作台 · 合规模块判定依据
-> 集成来源：yanwuyou/wechat-compliance-checker-skill（Apache开源，免费）
+> 历史线索来源：yanwuyou/wechat-compliance-checker-skill。该仓库未发现明确许可证，不直接复制其代码或把其摘要当作官方原文；当前依据见 `official-rules-evidence.md`。
 
 ## 总则
 

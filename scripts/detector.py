@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公众号文章发布前爆款检测引擎 v2.2 全行业版
-==========================================
-编辑复核：L1 内容八维评分 / L2 账号情景估算 / L2+ 爆款四基因 / L3 上下文合规与证据提示 / L4 写作风格风险
+公众号文章发布前编辑质量复核引擎 v2.4 全行业版
+==============================================
+编辑复核：L1 内容结构评分 / L2 证据与编辑门槛 / L3 上下文合规 / L4 写作风格风险
 支持全行业多赛道：自动识别赛道 + 手动指定赛道 + 风格自适应评分
 
 用法:
@@ -185,14 +185,13 @@ INDUCE = ["转发后领取", "分享截图", "关注后领取", "扫码关注", 
 TRIPLE_PATTERN = re.compile(r"[^，。；\n]*[，、][^，。；\n]*[，、][^，。；\n]*")
 # 分节/小标题正则（供结构、视觉维度复用）
 SUBHEADING_RE = re.compile(
-    r"^(#{1,3}\s|一、|二、|三、|第[一二三四五六七八九十\d]+[、.。，]|[0-9]+[、.。，]|【|（[0-9]+）|\([0-9]+\))")
-# 多平台违禁/敏感词（公众号+小红书+抖音 共通高频雷区，离线内嵌，warn 级为主避免误杀）
-# Do not treat a single character such as "最" as a violation.  These are
-# advisory patterns; the surrounding context still decides severity.
-BANNED_ABSOLUTE = ["第一", "国家级", "顶级", "万能", "100%", "绝对", "全网", "史上",
-                   "极致", "世界级", "唯一", "首选", "王牌", "销量第一", "领导者", "永久", "零风险"]
+    r"^(?:\*{0,2})?(#{1,3}\s|[①②③④⑤⑥⑦⑧⑨⑩]|一、|二、|三、|第[一二三四五六七八九十\d]+[、.。，]|[0-9]+(?:[、.。，]|\s+)|【|（[0-9]+）|\([0-9]+\))")
+# 广告绝对化表述必须结合语境判断。这里仅保留具有明确宣传承诺语义的组合，
+# 不把“退休第一年”“第一次”等普通叙述误判为广告违规。
+BANNED_ABSOLUTE = ["国家级", "万能", "100%有效", "绝对有效", "全网最低", "史上最低",
+                   "世界级品质", "销量第一", "行业第一", "零风险", "永久有效"]
 BANNED_SUPERLATIVE_RE = re.compile(
-    r"最(?:佳|好用|有效|专业|安全|便宜|低价|权威|值得买|值得推荐|先进|强大|适合购买)"
+    r"最(?:佳|好用|有效|专业|安全|便宜|低价|权威|值得买|值得推荐|先进|强大)"
 )
 BANNED_MEDICAL = ["治疗", "治愈", "抗癌", "消炎", "杀菌", "瘦身", "燃脂", "排毒", "药到病除", "降三高", "治百病"]
 BANNED_INDUCE = ["私信", "加微信", "免费领", "扫码", "限时", "抢购", "秒杀", "下单", "领券", "优惠券", "抽奖"]
@@ -211,8 +210,8 @@ PLATFORM_SURFACE_TERMS = ["闲鱼", "淘宝", "拼多多", "抖音", "小红书"
 # 绝对化对比词（反AI量化用）：模板腔信号
 ABSOLUTE_CLAIM = ["一定", "必须", "绝对", "毫无疑问", "毋庸置疑", "所有人都", "每个人都应该",
                   "无一例外", "百分之百", "100%", "必然", "统统", "全都"]
-LEVELS = {"S": (85, "潜力较高，人工复核后发布"), "A": (70, "改完 P0 项并人工复核"),
-          "B": (55, "大改标题+开头后再复核"), "C": (0, "建议重做选题或重写")}
+LEVELS = {"S": (85, "结构信号较完整"), "A": (70, "结构信号基本完整"),
+          "B": (55, "存在多项结构短板"), "C": (0, "结构信号明显不足")}
 
 # L1 八维权重（合计 100）：在 v2.1 六维基础上新增「结构节奏」「视觉呈现」
 DIM_FULL = {
@@ -223,13 +222,6 @@ DIM_NAMES = {
     "title": "标题钩子力", "opening": "开头钩子力", "content": "内容价值度",
     "structure": "结构节奏", "topic": "选题势能", "readability": "阅读体验",
     "visual": "视觉呈现", "interaction": "互动引导",
-}
-
-# 默认赛道基准打开率（各赛道差异化）
-TRACK_BASE_OPEN_RATE = {
-    "tech": 4.5, "finance": 5.0, "workplace": 6.0, "health": 8.0,
-    "education": 7.5, "relationship": 7.0, "food": 6.5, "beauty": 6.0,
-    "realestate": 5.5, "senior": 6.0, "general": 5.5,
 }
 
 # 赛道识别阈值：关键词命中 >= 3 才算命中该赛道
@@ -284,10 +276,31 @@ def find_superlative_hits(text):
     return list(dict.fromkeys(m.group(0) for m in BANNED_SUPERLATIVE_RE.finditer(value)))
 
 
+def find_absolute_claim_hits(text):
+    """Find promotional absolute claims without matching ordinary ordinals."""
+    value = compact_text(text)
+    hits = find_hits(value, BANNED_ABSOLUTE)
+    hits.extend(find_superlative_hits(value))
+    contextual_patterns = (
+        r"(?:销量|排名|行业|全国|全网|市场|品牌|效果|性价比).{0,4}第一",
+        r"第一.{0,4}(?:品牌|产品|选择|效果|销量|排名)",
+        r"唯一.{0,4}(?:选择|方法|答案|品牌|产品|机会)",
+        r"永久.{0,4}(?:有效|保用|免费|不变)",
+    )
+    for pattern in contextual_patterns:
+        for match in re.finditer(pattern, value):
+            if not _is_negated(value, match.start(), match.end()):
+                hits.append(match.group(0))
+    return list(dict.fromkeys(hits))
+
+
 def _has_source(text):
     value = normalize_text(text)
     return bool(re.search(
-        r"https?://|来源|出处|据.{0,12}(报道|公告|通知|统计|数据显示)|官方|报告|论文|采访|数据来自",
+        r"https?://|(?:来源|出处|数据来自)[:：]?\s*.{2,30}|"
+        r"据.{2,20}(?:报道|公告|通知|统计|数据显示|发布|通报)|"
+        r"(?:国务院|国家网信办|市场监管总局|国家卫健委|中国政府网).{0,16}(?:发布|公告|通知|通报)|"
+        r"《[^》]{2,40}》",
         value,
     ))
 
@@ -307,6 +320,130 @@ def _title_body_overlap(title, body):
     return sum(1 for x in bigrams if x in body_value) / len(bigrams)
 
 
+TITLE_NUMBER_RE = re.compile(
+    r"(?<!第)\d+(?:\.\d+)?(?:岁|元|块钱?|分钟|小时|天|年|个|座|条|种|%|折|倍)"
+)
+AUTHORITY_TERMS = ("联合国", "国务院", "卫健委", "市场监管总局", "研究表明",
+                   "报告显示", "数据显示", "统计显示", "专家表示", "权威机构")
+VOLATILE_TERMS = ("免票", "票价", "价格", "人均", "高铁", "车程", "分钟", "小时", "元", "块钱",
+                  "补贴", "利率", "医保", "养老金", "酒店", "民宿")
+FIRST_PERSON_EVIDENCE_RE = re.compile(
+    r"(?:我|我们|我家|我朋友|我同事|我老姐妹|我身边).{0,18}(?:亲历|经历|去过|住过|吃过|花了|发现|中过|踩过|采访|见过)"
+)
+
+
+def _sentence_units(text):
+    units = []
+    for paragraph in normalize_text(text).splitlines():
+        for sentence in re.split(r"(?<=[。！？!?；;])", paragraph):
+            value = sentence.strip()
+            if value:
+                units.append(value)
+    return units
+
+
+def _numeric_claim_supported(token, body):
+    if compact_text(token) in compact_text(body):
+        return True
+    number_match = re.match(r"(\d+)(.*)", token)
+    if number_match:
+        number = int(number_match.group(1))
+        digits = "零一二三四五六七八九"
+        chinese_number = None
+        if 0 <= number <= 9:
+            chinese_number = digits[number]
+        elif 10 <= number <= 99:
+            tens, ones = divmod(number, 10)
+            chinese_number = ("" if tens == 1 else digits[tens]) + "十" + (digits[ones] if ones else "")
+        if chinese_number and compact_text(chinese_number + number_match.group(2)) in compact_text(body):
+            return True
+    match = re.fullmatch(r"(\d+)(个|座|条|种)", token)
+    if not match:
+        return False
+    promised = int(match.group(1))
+    list_items = sum(1 for line in body.splitlines() if SUBHEADING_RE.match(line.strip()))
+    return list_items >= promised
+
+
+def build_source_ledger(title, body, track, style):
+    """Build a claim ledger; source markers are not treated as verified facts."""
+    text = normalize_text(title + "\n" + body)
+    ledger = []
+    seen = set()
+    for sentence in _sentence_units(text):
+        claim_type = None
+        severity = "review"
+        action = "核对事实，并在对应句附近补充来源、日期或适用条件。"
+        if any(term in sentence for term in AUTHORITY_TERMS) or re.search(
+                r"官方.{0,8}(?:发布|通报|公告|认证|评定|数据显示)", sentence):
+            claim_type = "authority"
+            severity = "block"
+            action = "补充可核验的机构、报告或公告名称和日期；无法核实时删除权威背书。"
+        elif any(term in sentence for term in ("政策", "新规", "法规", "通知", "规定")) or re.search(
+                r"《[^》]{2,30}办法》", sentence):
+            claim_type = "policy"
+            severity = "block"
+            action = "补充现行文件名称、发布机构、生效日期和来源链接。"
+        elif track in {"health", "finance"} and (
+                TITLE_NUMBER_RE.search(sentence) or any(term in sentence for term in PROMISE_TERMS + BANNED_MEDICAL)):
+            claim_type = "professional"
+            severity = "block"
+            action = "补充专业来源、适用范围和必要限定，不能用个人经验替代证据。"
+        elif TITLE_NUMBER_RE.search(sentence) and any(term in sentence for term in VOLATILE_TERMS):
+            claim_type = "volatile"
+            action = "核对价格、交通、优惠或开放信息，并注明查询日期；发布前再次确认。"
+        elif FIRST_PERSON_EVIDENCE_RE.search(sentence):
+            claim_type = "experience"
+            severity = "confirm"
+            action = "由作者确认确为本人或已获授权的真实经历；不能为了增强代入感虚构。"
+        if not claim_type:
+            continue
+        key = (claim_type, compact_text(sentence)[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        if claim_type == "experience":
+            status = "needs_author_confirmation"
+        elif _has_source(sentence):
+            status = "source_marker_present_unverified"
+            severity = "confirm"
+            action = "已发现来源提示，但仍需打开原始来源核对原文、日期和适用范围。"
+        else:
+            status = "missing_source"
+        ledger.append({
+            "claim": sentence[:140],
+            "claim_type": claim_type,
+            "status": status,
+            "severity": severity,
+            "action": action,
+        })
+        if len(ledger) >= 10:
+            break
+    return ledger
+
+
+def _title_promise_issues(title, body):
+    issues = []
+    unsupported_numbers = [token for token in TITLE_NUMBER_RE.findall(title) if not _numeric_claim_supported(token, body)]
+    if unsupported_numbers:
+        issues.append({
+            "type": "title_claim",
+            "severity": "block",
+            "title": "标题数字承诺未被正文承接",
+            "detail": "正文没有明确解释：" + "、".join(unsupported_numbers) + "。补齐依据或删除标题承诺。",
+        })
+    if re.search(r"第[一二三四五六七八九十\d]+个.{0,12}(?:后悔|没想到|才知道|中招)", title):
+        suspense_terms = [w for w in ("后悔", "没想到", "才知道", "中招") if w in title]
+        if suspense_terms and not any(w in body for w in suspense_terms):
+            issues.append({
+                "type": "title_claim",
+                "severity": "block",
+                "title": "标题悬念在正文中没有兑现",
+                "detail": "标题使用“" + "、".join(suspense_terms) + "”制造缺口，但正文没有对应事实或经历。",
+            })
+    return issues
+
+
 def evidence_review(title, body, track, style):
     """Surface source, freshness and title/body risks without pretending to fact-check."""
     text = normalize_text(title + "\n" + body)
@@ -314,7 +451,7 @@ def evidence_review(title, body, track, style):
     source_sensitive = track in {"finance", "health", "realestate", "senior"} or style == "news"
     policy_terms = ("政策", "新规", "通知", "公告", "养老金", "医保", "补贴", "利率", "法规", "规定")
     if source_sensitive and (any(w in text for w in policy_terms) or style == "news") and not _has_source(text):
-        issues.append({"type": "source", "severity": "review",
+        issues.append({"type": "source", "severity": "block",
                        "title": "缺少可核验来源",
                        "detail": "资讯、健康、财经或政策类内容建议补充来源链接/机构/报告名称。"})
     if any(w in text for w in policy_terms) and not _has_time_anchor(text):
@@ -325,6 +462,24 @@ def evidence_review(title, body, track, style):
         issues.append({"type": "alignment", "severity": "review",
                        "title": "标题正文关联偏弱",
                        "detail": "标题中的核心对象或承诺在正文中未得到足够展开，需人工核对是否标题党。"})
+    issues.extend(_title_promise_issues(title, body))
+    ledger = build_source_ledger(title, body, track, style)
+    missing_authority = [item for item in ledger if item["claim_type"] in {"authority", "policy", "professional"}
+                         and item["status"] == "missing_source"]
+    if missing_authority and not any(item["type"] == "source" for item in issues):
+        issues.append({"type": "claim_source", "severity": "block",
+                       "title": "关键事实缺少逐项来源",
+                       "detail": missing_authority[0]["claim"] + " ｜ " + missing_authority[0]["action"]})
+    volatile = [item for item in ledger if item["claim_type"] == "volatile" and item["status"] == "missing_source"]
+    if volatile:
+        issues.append({"type": "claim_freshness", "severity": "review",
+                       "title": "价格或交通信息需要发布前复核",
+                       "detail": volatile[0]["claim"] + " ｜ " + volatile[0]["action"]})
+    experience = [item for item in ledger if item["claim_type"] == "experience"]
+    if experience:
+        issues.append({"type": "experience", "severity": "confirm",
+                       "title": "第一人称经历需要作者确认",
+                       "detail": experience[0]["claim"] + " ｜ " + experience[0]["action"]})
     return issues
 
 
@@ -481,7 +636,7 @@ def dim_fix(key, style):
     if key == "interaction":
         if style in ("emotion", "narrative"):
             return "结尾加一句共鸣式提问（如「你最近，又在急着什么呢？」）或软收束句，自然引发评论与分享"
-        return "结尾补评论引导/在看关注召唤，给读者一个明确行动理由"
+        return "结尾提出与正文直接相关、读者有真实经验可回答的问题；不要用利益交换诱导关注或分享"
     if key == "content":
         if style in ("emotion", "narrative"):
             return "强化具体场景细节与情感递进（反思/转折），用真实对话增强代入，无需硬塞小标题"
@@ -491,12 +646,12 @@ def dim_fix(key, style):
             return "亮明立场 + 论据/案例支撑 + 多角度论证，让观点更立体"
         return "提升信息密度与关键数据，补全要素"
     base = {
-        "title": "补具体数字/时间锚点、特定群体词或悬念缺口，增强点开欲",
+        "title": "先写清对象、问题和读者收益；数字或悬念只有在正文能兑现时才保留",
         "opening": "前100字直接抛冲突场景或扎心设问，缩短铺垫，前两句就给钩子",
         "topic": "锚定一个具体赛道人群，补足其痛点词/利益点，或给选题一个新鲜视角",
         "readability": "拆短句（均≤25字）、压段落（≤120字）、减少英文缩写，提升手机阅读友好度",
         "structure": "检查起承转合：开头抛核心问题、中间有转折/递进、结尾补收束或升华金句",
-        "visual": "补充分节小标题/加粗关键词，或插入配图，提升扫读效率与停留时长",
+        "visual": "补充分节小标题/加粗关键词；配图必须帮助理解正文，而不是只作装饰",
     }
     return base.get(key, "建议重写该维度")
 
@@ -506,8 +661,7 @@ def detect_style(title, body):
     用多组信号词/结构打分，取最高；信号都很弱时回退到 emotion（个人化表达）。"""
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     text = title + "\n" + body
-    subheading = [l for l in lines if re.match(
-        r"^(#{1,3}\s|一、|二、|三、|第[一二三四五六七八九十\d]+[、.。，]|[0-9]+[、.。，]|【|（[0-9]+）|\([0-9]+\))", l)]
+    subheading = [l for l in lines if SUBHEADING_RE.match(l)]
     has_sub = len(subheading) >= 2
     sc = {"practical": 0, "emotion": 0, "opinion": 0, "narrative": 0, "news": 0}
 
@@ -564,31 +718,40 @@ def detect_style(title, body):
 # ============================================================
 # L1-1 标题钩子力 (25)
 # ============================================================
-def score_title(title, track):
+def score_title(title, track, body=""):
     b = []
     s = 0
-    if re.search(r"\d|第[一二三四五六七八九十\d]+年|\d+岁|%|倍", title):
-        s += 5; b.append(("含具体数字/时间锚点", 5))
+    number_claims = TITLE_NUMBER_RE.findall(title)
+    supported_numbers = [token for token in number_claims if _numeric_claim_supported(token, body)]
+    if number_claims and len(supported_numbers) == len(number_claims):
+        s += 3; b.append(("标题数字承诺均在正文中得到承接", 3))
+    elif number_claims:
+        b.append(("标题含未被正文承接的数字承诺", 0))
     t = TRACKS[track]
     if any(w in title for w in t["group"]):
-        s += 5; b.append((f"命中赛道群体词（{t['name']}）", 5))
+        s += 4; b.append((f"明确目标读者（{t['name']}）", 4))
     if any(w in title for w in EMOTION_CONFLICT):
-        s += 6; b.append(("含情绪冲突/反转词", 6))
+        s += 3; b.append(("呈现明确冲突或反差", 3))
     elif any(w in title for w in SUSPENSE_WORDS):
-        s += 4; b.append(("含悬念词", 4))
-    if any(w in title for w in SUSPENSE_WORDS):
-        s += 4; b.append(("含悬念缺口（竟然/悄悄/为什么）", 4))
+        s += 1; b.append(("含悬念词；只作轻度编辑信号", 1))
     if any(w in title for w in t["pain"]):
-        s += 4; b.append(("命中赛道痛点词", 4))
+        s += 3; b.append(("指出读者问题", 3))
     if any(w in title for w in t["benefit"]):
-        s += 1; b.append(("含利益点（涨薪/省钱/收益等）", 1))
+        s += 2; b.append(("说明读者收益", 2))
+    overlap = _title_body_overlap(title, body) if body else 0
+    if overlap >= 0.35:
+        s += 3; b.append(("标题核心信息在正文中充分展开", 3))
+    elif overlap >= 0.22:
+        s += 1; b.append(("标题正文有基本关联", 1))
+    else:
+        b.append(("标题正文关联偏弱，需核对承诺是否兑现", 0))
     n = len(title)
     if 15 <= n <= 25:
-        s += 4; b.append((f"字数{n}，处于最优区间15-25字", 4))
-    elif 10 <= n <= 30:
-        s += 2; b.append((f"字数{n}，可接受区间", 2))
+        s += 3; b.append((f"字数{n}，手机端信息密度适中", 3))
+    elif 10 <= n <= 32:
+        s += 1; b.append((f"字数{n}，长度可用", 1))
     else:
-        b.append((f"字数{n}，偏离最优区间", 0))
+        b.append((f"字数{n}，需检查是否过短或过长", 0))
     s = min(s, 18)
     return s, b
 # ============================================================
@@ -630,8 +793,7 @@ def score_content(title, body, track, style):
     s = 0
     t = TRACKS[track]
     lines = [l for l in body.splitlines() if l.strip()]
-    sub = [l for l in lines if re.match(
-        r"^(#{1,3}\s|一、|二、|三、|第[一二三四五六七八九十\d]+[、.。，]|[0-9]+[、.。，]|【|（[0-9]+）|\([0-9]+\))", l)]
+    sub = [l for l in lines if SUBHEADING_RE.match(l)]
     # --- 通用基础分：所有体裁都认可的好内容信号（避免某体裁被一刀切）---
     if len(sub) >= 2:
         s += 4
@@ -933,22 +1095,22 @@ def compliance_check(title, body, track):
             issues.append({"line": "医疗绝对化表述", "severity": "warn",
                            "hits": med[:5],
                            "fix": "避免'治愈/根治'等绝对化疗效承诺。"})
-    # 多平台极限词/违禁（公众号+小红书+抖音共通雷区，warn 级为主）
-    plat = find_hits(text, BANNED_ABSOLUTE) + find_superlative_hits(text)
+    # 绝对化广告用语需要结合宣传语境判断；普通序数不命中。
+    plat = find_absolute_claim_hits(text)
     if plat:
-        issues.append({"line": "平台极限词(小红书/抖音严打)", "severity": "warn",
+        issues.append({"line": "绝对化宣传表述（需结合语境）", "severity": "warn",
                        "hits": plat[:6],
-                       "fix": "慎用'最/第一/绝对/国家级'等极限词，易被限流或判违规。"})
+                       "fix": "核对是否属于广告宣传、是否有事实依据及限定条件；普通叙事序数不按违规处理。"})
     med2 = find_hits(text, BANNED_MEDICAL)
     if med2:
-        issues.append({"line": "医疗功效词(多平台禁)", "severity": "warn",
+        issues.append({"line": "医疗功效表述（需核验资质与证据）", "severity": "warn",
                        "hits": med2[:5],
-                       "fix": "避免'治疗/治愈/抗癌'等医疗功效承诺。"})
+                       "fix": "区分中性医疗叙述与疗效承诺；涉及治疗结论时核验资质、来源和适用范围。"})
     ind = find_hits(text, BANNED_INDUCE)
     if ind:
-        issues.append({"line": "诱导转化词(多平台禁)", "severity": "warn",
+        issues.append({"line": "营销/导流表述（需结合语境）", "severity": "warn",
                        "hits": ind[:5],
-                       "fix": "避免'私信/加微信/限时/秒杀'等硬诱导，改用软引导。"})
+                       "fix": "核对是否形成强制关注、利益交换或站外交易；普通事实叙述不按违规处理。"})
     fal = find_hits(text, BANNED_FALSE)
     if fal:
         issues.append({"line": "虚假承诺词", "severity": "block",
@@ -1017,63 +1179,46 @@ def ai_smell_check(title, body):
 
 
 # ============================================================
-# L2 阅读量预测
+# L2 账号数据基线（不做文章阅读量预测）
 # ============================================================
 def predict_reads(fans, open_rate, score, track, genes=None):
-    """Return a clearly labelled scenario estimate, not a platform probability.
+    """Expose only arithmetic account baselines from user-provided data.
 
-    A read count is withheld unless the caller supplies a real fan count.  A
-    track baseline is useful for comparison, but is not an account forecast.
+    Text rules cannot turn a generic track rate into a reliable article forecast.
+    The compatibility keys stay in the payload, but invented scenario numbers are
+    deliberately removed.
     """
-    base = open_rate if open_rate else TRACK_BASE_OPEN_RATE.get(track, 5.5)
-    factor = 0.6 + (score / 100.0) * 0.8
-    eff = base * factor
-    confidence = "low"
-    confidence_note = "未提供账号粉丝数和历史打开率，仅为赛道基准情景，不预测阅读量。"
-    reads = None
-    lo = None
-    hi = None
-    scenario_reads = []
-    if fans and fans > 0:
-        reads = int(fans * eff / 100.0)
-        lo = int(reads * 0.7)
-        hi = int(reads * 1.4)
-        if open_rate is not None:
-            confidence = "medium"
-            confidence_note = "使用用户提供的粉丝数和单个账号打开率，仍需用历史文章校准。"
-        else:
-            confidence = "low"
-            confidence_note = "粉丝数已提供，但打开率使用赛道基准，不代表账号实际表现。"
+    baseline_reads = None
+    if fans and fans > 0 and open_rate is not None and open_rate >= 0:
+        baseline_reads = int(fans * open_rate / 100.0)
+        data_state = "account_baseline"
+        confidence = "insufficient_for_forecast"
+        confidence_note = "仅按用户提供的粉丝数×历史平均打开率计算账号基线，不是本文阅读量预测。"
     else:
-        # 无粉丝数时提供透明的规模情景，不冒充账号真实预测。
-        for assumed_fans in (1000, 10000, 100000):
-            estimate = int(assumed_fans * eff / 100.0)
-            scenario_reads.append({
-                "fans": assumed_fans,
-                "predict": estimate,
-                "range": [int(estimate * 0.7), int(estimate * 1.4)],
-            })
-    # Text-only heuristics cannot identify real completion, share or platform
-    # recommendation probabilities. Keep only a qualitative editorial signal.
-    pool_level = "高" if score >= 75 else ("中" if score >= 55 else "低")
-    pool_prob = None
+        data_state = "missing_history"
+        confidence = "not_estimated"
+        confidence_note = "缺少账号真实历史数据，不输出阅读量、打开率或流量池数字。"
     return {
-        "base_open_rate": round(base, 2),
-        "eff_open_rate": round(eff, 2),
-        "predict": reads,
-        "range": [lo, hi],
+        "data_state": data_state,
+        "provided_fans": fans,
+        "provided_open_rate": open_rate,
+        "baseline_reads": baseline_reads,
+        "base_open_rate": round(open_rate, 2) if open_rate is not None else None,
+        "eff_open_rate": None,
+        "predict": None,
+        "range": [None, None],
         "confidence": confidence,
         "confidence_note": confidence_note,
-        "scenario_reads": scenario_reads,
+        "scenario_reads": [],
         "completion_rate": None,
         "share_rate": None,
-        "pool_level": pool_level,
-        "pool_prob": pool_prob,
+        "pool_level": None,
+        "pool_prob": None,
     }
 
 
 # ============================================================
-# L2+ 爆款四基因（情绪/实用/身份/社交货币）
+# L2+ 四个传播要素（情绪/实用/身份/社交货币）
 # ------------------------------------------------------------
 # 用"四基因"透镜重评选题势能与内容价值：命中越多基因，越具备自发传播力。
 # 每基因 0-100，输出画像供报告展示，并给选题维度做轻度加成。
@@ -1119,14 +1264,13 @@ def viral_genes(title, body, style):
 # ------------------------------------------------------------
 # 说明：本层为"启发式模拟"，非真实用户行为数据。按「年龄+行业身份+阅读性格」
 # 三维定义读者原型，用文章已被 L1 测出的特征（句长/数据/方法论/情绪/口语/互动）
-# 去匹配每个原型的偏好权重，估算其点开/读完/互动概率，输出共鸣画像。
+# 去匹配每个原型的偏好权重，输出文本适配指数，不推断用户行为。
 # 用途：看清"这篇打动了谁、谁无感、该往哪改去撬动某类人"。
 # ============================================================
 PERSONAS = {
     "young_student": {
         "name": "青年学生·尝鲜社交型", "age": "18-25", "identity": "学生/年轻群体",
         "style": "猎奇社交，爱热点和社交货币，怕长文干货",
-        "open_base": 0.70, "interact_base": 0.80,
         "affinity": {"tech": 1.3, "food": 1.1, "beauty": 1.2, "relationship": 1.1,
                      "general": 1.0, "education": 0.9},
         "pref": {"short": 0.85, "data": 0.30, "method": 0.35, "emotion": 0.70, "oral": 0.80},
@@ -1134,7 +1278,6 @@ PERSONAS = {
     "young_worker": {
         "name": "青年职场·理性实用型", "age": "26-35", "identity": "职场打工人",
         "style": "重数据时效和方法论，关心涨薪副业，能忍长文",
-        "open_base": 0.65, "interact_base": 0.55,
         "affinity": {"tech": 1.3, "workplace": 1.3, "finance": 1.1,
                      "realestate": 0.9, "general": 0.9},
         "pref": {"short": 0.60, "data": 0.85, "method": 0.85, "emotion": 0.40, "oral": 0.50},
@@ -1142,7 +1285,6 @@ PERSONAS = {
     "mid_parent": {
         "name": "宝妈家庭·实用焦虑型", "age": "30-45", "identity": "宝妈/家庭",
         "style": "重育儿健康干货和安全感，吃真实经验",
-        "open_base": 0.70, "interact_base": 0.50,
         "affinity": {"education": 1.3, "health": 1.2, "food": 1.1, "beauty": 1.0,
                      "relationship": 0.9, "senior": 0.7},
         "pref": {"short": 0.70, "data": 0.50, "method": 0.70, "emotion": 0.60, "oral": 0.70},
@@ -1150,7 +1292,6 @@ PERSONAS = {
     "mid_manager": {
         "name": "企业主·效率功利型", "age": "36-50", "identity": "管理层/企业主",
         "style": "重利益方法和结论，没空看水货，嫌情绪化",
-        "open_base": 0.50, "interact_base": 0.35,
         "affinity": {"finance": 1.3, "workplace": 1.1, "realestate": 1.2,
                      "tech": 1.0, "general": 0.7},
         "pref": {"short": 0.50, "data": 0.90, "method": 0.90, "emotion": 0.30, "oral": 0.30},
@@ -1158,7 +1299,6 @@ PERSONAS = {
     "silver": {
         "name": "银发退休·养生情感型", "age": "50+", "identity": "退休/中老年",
         "style": "重健康政策和情感，怕长句英文，爱口语故事",
-        "open_base": 0.80, "interact_base": 0.45,
         "affinity": {"senior": 1.4, "health": 1.3, "food": 0.9,
                      "general": 0.9, "relationship": 0.8},
         "pref": {"short": 0.95, "data": 0.40, "method": 0.50, "emotion": 0.85, "oral": 0.90},
@@ -1166,7 +1306,6 @@ PERSONAS = {
     "general_feel": {
         "name": "大众·情绪共鸣型", "age": "全年龄", "identity": "普通读者",
         "style": "吃情绪冲突和故事，容易转发共情文",
-        "open_base": 0.60, "interact_base": 0.60,
         "affinity": {"relationship": 1.2, "general": 1.2, "senior": 1.0,
                      "health": 0.9, "workplace": 0.9},
         "pref": {"short": 0.60, "data": 0.30, "method": 0.40, "emotion": 0.95, "oral": 0.80},
@@ -1174,7 +1313,6 @@ PERSONAS = {
     "knowledge_seeker": {
         "name": "知识型·深度阅读型", "age": "全年龄", "identity": "爱好者/深度读者",
         "style": "重数据案例和深度，能忍长文，少互动",
-        "open_base": 0.55, "interact_base": 0.40,
         "affinity": {"tech": 1.2, "finance": 1.1, "health": 1.1,
                      "education": 1.1, "workplace": 1.0},
         "pref": {"short": 0.30, "data": 0.90, "method": 0.85, "emotion": 0.40, "oral": 0.40},
@@ -1198,27 +1336,25 @@ def extract_features(title, body, track, interaction_score):
 
 
 def simulate_audience(title, body, track, interaction_score):
-    """对每类读者原型估算 open/read/interact 概率与共鸣分(0-100)，按共鸣降序返回"""
+    """Return an editorial persona fit index, never behavior probabilities."""
     feats = extract_features(title, body, track, interaction_score)
     out = []
     for pid, p in PERSONAS.items():
         aff = p["affinity"].get(track, 0.60)
-        open_p = max(0.10, min(0.95, p["open_base"] * aff))
         # 特征贴合度：原型偏好目标值 与 文章实际值的接近度（1=完美匹配）
         fit = 0.0
         for k in ("short", "data", "method", "emotion", "oral"):
             fit += 1 - abs(p["pref"][k] - feats[k])
         fit /= 5.0
-        read_p = max(0.10, min(0.95, 0.30 + fit * 0.65))
-        interact_p = max(0.05, min(0.90, p["interact_base"] * (0.40 + feats["interaction"] * 0.60)))
-        resonance = round((open_p * 0.35 + read_p * 0.45 + interact_p * 0.20) * 100)
+        affinity = min(1.0, aff / 1.4)
+        match_index = round((fit * 0.75 + affinity * 0.25) * 100)
         gaps = [(k, p["pref"][k] - feats[k]) for k in ("short", "data", "method", "emotion", "oral") if p["pref"][k] - feats[k] > 0.15]
         gaps.sort(key=lambda x: x[1], reverse=True)
         weak = gaps[0][0] if gaps else None
         out.append({
             "id": pid, "name": p["name"], "age": p["age"], "identity": p["identity"],
-            "style": p["style"], "open": round(open_p * 100), "read": round(read_p * 100),
-            "interact": round(interact_p * 100), "resonance": resonance, "fit": round(fit * 100),
+            "style": p["style"], "open": None, "read": None, "interact": None,
+            "resonance": match_index, "match_index": match_index, "fit": round(fit * 100),
             "weak": weak,
         })
 
@@ -1237,6 +1373,52 @@ FEATURE_TIP = {
 }
 
 
+def build_editorial_gate(scores, compliance, evidence, content_risk):
+    """Make release readiness depend on blockers, not on a compensating score."""
+    blockers = []
+    revisions = []
+    confirmations = []
+    for item in compliance:
+        target = blockers if item.get("severity") == "block" else revisions
+        target.append(item["line"])
+    for item in evidence:
+        if item.get("severity") == "block":
+            blockers.append(item["title"])
+        elif item.get("severity") == "confirm":
+            confirmations.append(item["title"])
+        else:
+            revisions.append(item["title"])
+    for item in content_risk.get("substantive", []):
+        target = blockers if item.get("severity") == "block" else revisions
+        target.append(item["signal"])
+    for key, full in DIM_FULL.items():
+        if scores[key] / full < 0.5:
+            revisions.append(DIM_NAMES[key] + "偏低")
+    blockers = list(dict.fromkeys(blockers))
+    revisions = list(dict.fromkeys(revisions))
+    confirmations = list(dict.fromkeys(confirmations))
+    if blockers:
+        status = "hold"
+        label = "暂缓发布"
+        summary = "存在不能被总分抵消的证据或内容风险，先处理 P0 项。"
+    elif revisions:
+        status = "revise"
+        label = "修改后复核"
+        summary = "没有发布阻断项，但仍有明确短板需要修改。"
+    else:
+        status = "human_review"
+        label = "可进入人工终审"
+        summary = "规则层未发现明确阻断项；仍需人工核对事实、表达和账号适配。"
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "blockers": blockers,
+        "revisions": revisions,
+        "confirmations": confirmations,
+    }
+
+
 # ============================================================
 # 主检测流程
 # ============================================================
@@ -1245,7 +1427,7 @@ def detect(title, body, fans=None, open_rate=None, track=None):
     body = normalize_text(body)
     track = detect_track(title, body, track)
     style_id, style_name, style_scores = detect_style(title, body)
-    st, bt = score_title(title, track)
+    st, bt = score_title(title, track, body)
     so, bo = score_opening(title, body, track)
     sc, bc = score_content(title, body, track, style_id)
     sst, bst = score_structure(title, body, style_id)
@@ -1253,12 +1435,12 @@ def detect(title, body, fans=None, open_rate=None, track=None):
     srd, brd = score_readability(body, track)
     svi, bvi = score_visual(body, style_id)
     sin, bin_ = score_interaction(body, style_id)
-    # 爆款四基因（命中则轻度加成选题势能）
+    # 四个传播要素（命中只作轻度结构信号）
     genes = viral_genes(title, body, style_id)
     gene_max = max(genes.values())
     if gene_max >= 60:
         stp = min(DIM_FULL["topic"], stp + 2)
-        btp.append(("命中爆款基因（情绪/实用/身份/社交货币），传播势能强", 2))
+        btp.append(("命中传播要素（情绪/实用/身份/社交货币）", 2))
     raw = st + so + sc + sst + stp + srd + svi + sin
     penalty, ai_risk, ai_find = ai_smell_check(title, body)
     total = max(0, min(100, raw - penalty))
@@ -1271,7 +1453,13 @@ def detect(title, body, fans=None, open_rate=None, track=None):
     pred = predict_reads(fans, open_rate, total, track, genes)
     audience = simulate_audience(title, body, track, sin)
     evidence = evidence_review(title, body, track, style_id)
+    source_ledger = build_source_ledger(title, body, track, style_id)
     content_risk = content_risk_review(title, body, track)
+    score_payload = {
+        "title": st, "opening": so, "content": sc, "structure": sst,
+        "topic": stp, "readability": srd, "visual": svi, "interaction": sin,
+    }
+    editorial_gate = build_editorial_gate(score_payload, issues, evidence, content_risk)
     if len(body.strip()) < 300:
         score_confidence = "low"
     elif len(body.strip()) < 800:
@@ -1296,9 +1484,11 @@ def detect(title, body, fans=None, open_rate=None, track=None):
         },
         "level": level,
         "level_desc": LEVELS[level][1],
+        "editorial_gate": editorial_gate,
         "compliance": issues,
         "content_risk": content_risk,
         "evidence": evidence,
+        "source_ledger": source_ledger,
         "score_confidence": score_confidence,
         "ai_smell": {"penalty": penalty, "risk": ai_risk, "findings": ai_find},
         "genes": genes,
@@ -1337,7 +1527,8 @@ def build_suggestions(r):
         sugg.append({"pri": "P2", "title": "发布前确认：" + it["signal"],
                      "detail": quote + it["mechanism"] + " ｜ 核对：" + it["action"]})
     for it in r.get("evidence", []):
-        sugg.append({"pri": "P1", "title": it["title"], "detail": it["detail"]})
+        pr = "P0" if it.get("severity") == "block" else "P1"
+        sugg.append({"pri": pr, "title": it["title"], "detail": it["detail"]})
     # 2. 八维短板
     for key, f in full.items():
         v = r["scores"][key]
@@ -1366,7 +1557,7 @@ def build_suggestions(r):
         tip = FEATURE_TIP.get(aud[-1]["weak"], "调整内容取向以贴合该类读者")
         sugg.append({"pri": "P2", "title": "撬动「" + aud[-1]["name"] + "」",
                      "detail": "其偏好：" + aud[-1]["style"] + "。" + tip})
-    # 4.5 爆款四基因撬动
+    # 4.5 传播要素补强
     genes = r.get("genes") or {}
     if genes:
         weakest = min(genes, key=genes.get)
@@ -1377,7 +1568,7 @@ def build_suggestions(r):
                 "identity": "强化群体身份认同（我们/我也是/打工人），制造归属感",
                 "social": "增加金句/反转/扎心观点，让人想转发朋友圈",
             }.get(weakest, "强化该基因以提升自发传播力")
-            sugg.append({"pri": "P2", "title": "补强爆款基因·" + GENE_KEYS[weakest],
+            sugg.append({"pri": "P2", "title": "补强传播要素·" + GENE_KEYS[weakest],
                          "detail": gtip})
     order = {"P0": 0, "P1": 1, "P2": 2}
     sugg.sort(key=lambda x: order[x["pri"]])
@@ -1414,14 +1605,14 @@ def build_strengths(r):
     # 4. 精准命中受众
     aud = r.get("audience") or []
     if aud and aud[0]["resonance"] >= 60:
-        items.append({"title": "精准命中受众",
-                      "detail": f"「{aud[0]['name']}」共鸣 {aud[0]['resonance']}，传播势能强"})
-    # 4.5 爆款基因突出
+        items.append({"title": "读者原型适配",
+                      "detail": f"文本特征与「{aud[0]['name']}」预设偏好的适配指数为 {aud[0]['match_index']}；不是用户行为概率"})
+    # 4.5 传播要素突出
     genes = r.get("genes") or {}
     hot = [GENE_KEYS[k] for k, v in genes.items() if v >= 70]
     if hot:
-        items.append({"title": "爆款基因突出",
-                      "detail": "强基因：" + "、".join(hot) + "，具备自发传播潜力"})
+        items.append({"title": "传播要素突出",
+                      "detail": "明显要素：" + "、".join(hot) + "；这是编辑信号，不代表平台推荐"})
     return items[:5]
 
 
@@ -1430,12 +1621,16 @@ def build_strengths(r):
 # ============================================================
 def fmt_md(r):
     L = []
-    L.append(f"# 🔍 公众号爆款检测报告（{TRACKS[r['track_id']]['name']}）\n")
+    L.append(f"# 🔍 公众号文章编辑复核报告（{TRACKS[r['track_id']]['name']}）\n")
     L.append(f"**标题**：{r['title']}")
     L.append(f"**识别赛道**：`{r['track_id']}` {r['track_name']}")
     L.append(f"**文章风格**：`{r['style_id']}` {r['style_name']}（评分按此风格适配）")
-    L.append(f"**综合得分**：**{r['scores']['total']}/100**  → 等级 **{r['level']}**（{r['level_desc']}）\n")
-    L.append(f"**评分可信度**：{r['score_confidence']}（文本规则评分，仅用于编辑复核，不代表平台判定）")
+    gate = r["editorial_gate"]
+    L.append(f"**结构参考分**：**{r['scores']['total']}/100**  → 等级 **{r['level']}**（{r['level_desc']}）")
+    L.append(f"**编辑结论**：**{gate['label']}** · {gate['summary']}\n")
+    L.append(f"**评分可信度**：{r['score_confidence']}（规则分只描述可检测结构，不能抵消事实、来源或合规问题）")
+    if gate["blockers"]:
+        L.append("**发布阻断项**：" + "；".join(gate["blockers"]))
     L.append("## L1 内容八维评分")
     for key in ["title", "opening", "content", "structure", "topic",
                 "readability", "visual", "interaction"]:
@@ -1490,6 +1685,18 @@ def fmt_md(r):
     else:
         for it in r["evidence"]:
             L.append(f"- ⚠️ {it['title']}：{it['detail']}")
+    L.append("\n## 事实声明账本")
+    ledger = r.get("source_ledger", [])
+    if not ledger:
+        L.append("- 未提取到明显的权威、政策、专业、时效价格或第一人称经历声明。")
+    else:
+        status_names = {
+            "missing_source": "缺少来源",
+            "source_marker_present_unverified": "发现来源提示，尚未核验",
+            "needs_author_confirmation": "需要作者确认",
+        }
+        for item in ledger:
+            L.append(f"- [{item['claim_type']}] {status_names.get(item['status'], item['status'])}：{item['claim']} → {item['action']}")
     L.append("\n## L4 写作风格风险")
     L.append(f"- 风格风险分：**{r['ai_smell']['risk']}/100**（越高越模板化；不代表 AI 来源概率）")
     if r["ai_smell"]["findings"]:
@@ -1497,35 +1704,28 @@ def fmt_md(r):
             L.append(f"- {f if f.startswith('✅') else '⚠️ ' + f}")
     else:
         L.append("- ✅ 未发现明显模板化信号")
-    L.append("\n## L2 阅读量预测")
+    L.append("\n## 账号数据基线")
     p = r["predict"]
-    L.append(f"- 基准打开率：{p['base_open_rate']}%  →  有效打开率：{p['eff_open_rate']}%")
-    if p['predict'] is None:
-        L.append("- 阅读量：未估计（需要真实粉丝数；当前仅提供赛道基准情景）")
-        if p.get("scenario_reads"):
-            L.append("- 假设粉丝规模阅读情景（按有效打开率计算，仅供横向参考）：")
-            for item in p["scenario_reads"]:
-                L.append(f"  - {item['fans']:,} 粉丝：约 **{item['predict']:,}**（区间 {item['range'][0]:,}~{item['range'][1]:,}）")
+    if p.get("baseline_reads") is None:
+        L.append("- 未估算阅读量：缺少账号真实粉丝数与历史平均打开率。")
     else:
-        L.append(f"- 账号情景阅读量：约 **{p['predict']}**（区间 {p['range'][0]}~{p['range'][1]}）")
-    L.append(f"- 预测可信度：**{p['confidence']}** · {p['confidence_note']}")
-    L.append(f"- 文本传播信号：{p['pool_level']}（不是平台流量池概率；读完率/分享率需发布后后台数据）")
-    L.append("\n## 爆款四基因（传播势能透镜）")
+        L.append(f"- 账号历史基线：约 **{p['baseline_reads']:,}**（{p['provided_fans']:,} 粉丝 × {p['provided_open_rate']}% 历史平均打开率）")
+    L.append(f"- 数据边界：{p['confidence_note']}")
+    L.append("\n## 四个传播要素（启发式编辑透镜）")
     genes = r["genes"]
     for k, v in genes.items():
         bar = "█" * int(v / 100 * 20)
         L.append(f"- {GENE_KEYS[k]}：{v}/100 `{bar}`")
-    L.append("\n## L2+ 受众共鸣画像（启发式模拟）")
-    L.append("> 说明：本地启发式画像，非真实阅读数据。按年龄+行业+阅读性格定义读者原型，")
-    L.append("> 用文章特征匹配其偏好，输出编辑参考指数，不是用户行为概率。")
+    L.append("\n## 读者原型适配（启发式）")
+    L.append("> 说明：这是文本特征与预设读者偏好的适配指数，不是点开、读完、互动或推荐概率。")
     aud = r["audience"]
     top, bottom = aud[0], aud[-1]
-    L.append(f"- 🔥 最吃这套：**{top['name']}**（{top['age']}·{top['identity']}）共鸣 **{top['resonance']}**/100")
-    L.append(f"- 🧊 最不感冒：**{bottom['name']}**（{bottom['age']}·{bottom['identity']}）共鸣 **{bottom['resonance']}**/100")
-    L.append("\n各原型共鸣分（点开/读完/互动）：")
+    L.append(f"- 最适配：**{top['name']}**（{top['age']}·{top['identity']}）适配指数 **{top['match_index']}**/100")
+    L.append(f"- 最不适配：**{bottom['name']}**（{bottom['age']}·{bottom['identity']}）适配指数 **{bottom['match_index']}**/100")
+    L.append("\n各原型适配指数：")
     for a in aud:
         mark = " ◀最强" if a is top else (" ◀最弱" if a is bottom else "")
-        L.append(f"- {a['name']} [{a['age']}·{a['identity']}]：共鸣 **{a['resonance']}** ｜ 开{a['open']} 读{a['read']} 互{a['interact']}{mark}")
+        L.append(f"- {a['name']} [{a['age']}·{a['identity']}]：适配 **{a['match_index']}**{mark}")
     if bottom["resonance"] < 50 and bottom["weak"]:
         tip = FEATURE_TIP.get(bottom["weak"], "调整内容取向以贴合该类读者")
         L.append(f"\n> 💡 想撬动『{bottom['name']}』（偏好：{bottom['style']}）：{tip}。")
@@ -1542,7 +1742,7 @@ def fmt_md(r):
     return "\n".join(L)
 
 
-def fmt_html(r):
+def fmt_html_legacy(r):
     # ---------- 动态内容块（先构建，避免外层 f-string 出现字面花括号） ----------
     p = r["predict"]
     aud = r["audience"]
@@ -1795,13 +1995,15 @@ def fmt_html(r):
     score = r["scores"]["total"]
     score_class = "score-high" if score >= 80 else ("score-good" if score >= 60 else ("score-mid" if score >= 40 else "score-low"))
     score_color = "#34C759" if score >= 80 else ("#007AFF" if score >= 60 else ("#FF9500" if score >= 40 else "#FF3B30"))
-    if p["predict"] is None and p.get("scenario_reads"):
-        scenario_cards = "".join(f'<div class="scenario-card"><b>{item["fans"]:,}</b><span>粉丝</span><strong>约 {item["predict"]:,}</strong><small>{item["range"][0]:,}~{item["range"][1]:,}</small></div>' for item in p["scenario_reads"])
-        scene_body = f'<div class="scene-caption"><b>假设粉丝规模阅读情景</b><span>按有效打开率计算，仅供横向参考，不代表账号实际阅读量</span></div><div class="scenario-grid">{scenario_cards}</div><div class="note">这是没有真实粉丝数时的横向参考，不代表账号实际阅读量。文本传播信号仅供编辑判断。</div>'
-        scene_meta = f'三档假设规模 · 有效打开率 {p["eff_open_rate"]}%'
+    if p.get("baseline_reads") is not None:
+        scene_body = (f'<div class="scene-caption"><b>账号历史算术基线</b><span>仅使用用户提供的数据，不做本文预测</span></div>'
+                      f'<div class="scenario-grid"><div class="scenario-card"><b>{p["provided_fans"]:,}</b><span>粉丝</span>'
+                      f'<strong>约 {p["baseline_reads"]:,}</strong><small>{p["provided_open_rate"]}% 历史平均打开率</small></div></div>'
+                      f'<div class="note">{esc(p["confidence_note"])}</div>')
+        scene_meta = "账号历史基线，不是本文预测"
     else:
-        scene_body = '<div class="empty">提供粉丝数后显示账号情景阅读量。</div>'
-        scene_meta = "需要账号粉丝数"
+        scene_body = '<div class="empty">缺少账号真实粉丝数与历史平均打开率，本报告不输出阅读量、打开率或流量池数字。</div>'
+        scene_meta = "未接入账号历史数据"
     # Keep the modal aligned with the engine and the Markdown report: all eight dimensions.
     score_keys = ["title", "opening", "content", "structure", "topic", "readability", "visual", "interaction"]
     dims = [(DIM_NAMES[k], k, DIM_FULL[k]) for k in score_keys]
@@ -1819,7 +2021,7 @@ def fmt_html(r):
         suggestion_cards = '<div class="empty">无明显短板，保持即可。</div>'
         plain = "无明显短板，保持即可。"
     gene_rows = "".join(f'<div class="score-row"><span>{GENE_KEYS[k]}</span><div class="bar"><i style="width:{r["genes"][k]}%"></i></div><b>{r["genes"][k]}</b></div>' for k in ["emotion", "utility", "identity", "social"])
-    audience_rows = "".join(f'<div class="score-row"><span>{esc(a["name"])}</span><div class="bar"><i style="width:{a["resonance"]}%"></i></div><b>{a["resonance"]}</b></div>' for a in aud[:4])
+    audience_rows = "".join(f'<div class="score-row"><span>{esc(a["name"])}</span><div class="bar"><i style="width:{a["match_index"]}%"></i></div><b>{a["match_index"]}</b></div>' for a in aud[:4])
     compliance = '<div class="success">✓ 未命中当前已知词表<br><small>不等于平台审核通过，仍需结合事实、来源和上下文复核。</small></div>' if not r["compliance"] else '<div class="empty">存在需要人工复核的合规提示。</div>'
     ai_risk = r["ai_smell"]["risk"]
     cr = r.get("content_risk", {})
@@ -1834,7 +2036,13 @@ def fmt_html(r):
         risk_extra = '<div class="note">' + '<br>'.join(risk_notes) + '</div>'
     else:
         risk_extra = '<div class="success">✓ 未发现明显的机器审核表面信号或内容实质风险</div>'
-    risk_body = f'<div class="success">✓ 合规词扫描：{"未发现当前词表命中" if not r["compliance"] else "存在需要人工复核的命中项"}<br>✓ 写作风格风险：{ai_risk}/100<br><small>词表未命中不等于平台审核通过；风险层会区分机器误判信号与内容实质问题。</small></div>{risk_extra}<div class="note">标题正文关联提示：建议在开头明确标题与正文核心矛盾的关系，避免读者预期错位。</div>'
+    ledger = r.get("source_ledger", [])
+    if ledger:
+        ledger_lines = [f'{esc(item["claim_type"])} · {esc(item["status"])}：{esc(item["claim"])}' for item in ledger[:6]]
+        ledger_extra = '<div class="note"><b>事实声明账本</b><br>' + '<br>'.join(ledger_lines) + '</div>'
+    else:
+        ledger_extra = '<div class="success">✓ 未提取到明显的权威、政策、专业、时效价格或第一人称经历声明</div>'
+    risk_body = f'<div class="success">✓ 合规词扫描：{"未发现当前词表命中" if not r["compliance"] else "存在需要人工复核的命中项"}<br>✓ 写作风格风险：{ai_risk}/100<br><small>词表未命中不等于平台审核通过；风险层会区分机器误判信号与内容实质问题。</small></div>{risk_extra}{ledger_extra}'
     css = """
 :root{--bg:#f5f5f7;--text:#1d1d1f;--muted:#6e6e73;--blue:#007aff;--green:#34c759;--orange:#ff9500;--red:#ff3b30;--line:rgba(60,60,67,.14)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Avenir Next","Noto Sans SC","PingFang SC","Microsoft YaHei UI",sans-serif;color:var(--text);background:radial-gradient(820px 480px at 50% -14%,#fff 0,#f5f5f7 58%,#e8ebf0 100%);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}body{padding:26px;line-height:1.5}.app{max-width:980px;margin:auto}.glass{background:rgba(255,255,255,.68);border:1px solid rgba(255,255,255,.82);box-shadow:0 1px 0 rgba(255,255,255,.95) inset,0 14px 36px rgba(60,60,67,.1);backdrop-filter:blur(32px) saturate(170%);-webkit-backdrop-filter:blur(32px) saturate(170%)}.topbar{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-radius:17px}.brand{font-size:13px;font-weight:700}.dot{display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#007aff;box-shadow:0 0 0 5px rgba(0,122,255,.12)}.meta{font-size:11px;color:var(--muted)}.hero{margin-top:14px;padding:40px 42px 36px;border-radius:24px}.eyebrow{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.13em}.title{font-size:clamp(31px,4vw,46px);line-height:1.1;letter-spacing:-.06em;margin:16px 0 12px}.lead{max-width:700px;color:var(--muted);font-size:14px;line-height:1.8}.scoreline{display:flex;align-items:center;gap:24px;margin-top:30px}.score{font-size:102px;line-height:.76;letter-spacing:-.1em;font-weight:800;font-variant-numeric:tabular-nums}.score-high{color:var(--green)}.score-good{color:var(--blue)}.score-mid{color:var(--orange)}.score-low{color:var(--red)}.score-info{border-left:1px solid var(--line);padding-left:24px;display:grid;gap:10px}.pill{display:inline-block;width:max-content;padding:7px 13px;border-radius:999px;font-size:12px;font-weight:700}.pill.level{background:#eaf3ff;color:#007aff}.pill.style{background:#eef0ff;color:#5856d6}.verdict{font-size:12px;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:32px;padding-top:20px;border-top:1px solid var(--line)}.stat{min-height:78px;padding:16px 17px;border-radius:16px;background:rgba(245,245,247,.72);border:1px solid rgba(60,60,67,.1);display:grid;grid-template-columns:auto 1fr;grid-template-rows:1fr auto;column-gap:8px;align-items:center}.stat b{font-size:25px;line-height:1;grid-column:1;grid-row:1}.stat span{font-size:11px;color:var(--muted);grid-column:2;grid-row:1}.stat em{font-size:11px;color:var(--blue);font-style:normal;grid-column:1/-1;grid-row:2;margin-top:7px}.section-head{display:flex;justify-content:space-between;align-items:center;margin:25px 3px 10px}.section-head h2{font-size:17px;margin:0}.section-head span{font-size:11px;color:var(--muted)}.modules{display:grid;gap:12px}.module{width:100%;min-height:92px;padding:18px 23px;border-radius:19px;border:1px solid rgba(255,255,255,.82);background:rgba(255,255,255,.64);box-shadow:0 1px 0 rgba(255,255,255,.92) inset,0 8px 20px rgba(60,60,67,.08);display:grid;grid-template-columns:52px 1fr auto;align-items:center;gap:17px;text-align:left;color:var(--text);cursor:pointer;transition:.2s}.module:hover{transform:translateY(-2px);border-color:rgba(0,122,255,.34);box-shadow:0 12px 26px rgba(0,122,255,.12)}.module-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:15px;background:#eef2ff;color:var(--blue);font-size:21px}.module:nth-child(3) .module-icon{background:#fff3e0;color:var(--orange)}.module:nth-child(4) .module-icon{background:#e9f9ef;color:var(--green)}.module strong{font-size:17px;letter-spacing:-.025em}.module small{display:block;color:var(--muted);font-size:12px;margin-top:5px}.chevron{color:#8e8e93;font-size:27px}.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:28px;background:rgba(0,0,0,.28);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:10}.modal.open{display:flex}.modal-card{width:min(900px,calc(100vw - 56px));max-height:calc(100vh - 56px);overflow:auto;padding:40px 44px;border-radius:28px;background:rgba(255,255,255,.97);border:1px solid rgba(60,60,67,.16);box-shadow:0 28px 90px rgba(0,0,0,.22)}.modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding-bottom:22px;margin-bottom:25px;border-bottom:1px solid var(--line)}.modal-head h2{font-size:32px;letter-spacing:-.055em;margin:0}.modal-head p{font-size:14px;color:var(--muted);margin:7px 0 0}.modal-actions{display:flex;gap:9px;align-items:center}.copy{border:0;border-radius:999px;padding:10px 15px;background:var(--blue);color:#fff;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.copy.copied{background:var(--green)}.close{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:#f2f2f7;color:var(--muted);font-size:24px;cursor:pointer}.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.scenario-card{padding:20px;border-radius:17px;background:#f5f5f7;border:1px solid rgba(60,60,67,.11)}.scenario-card b{font-size:14px}.scenario-card strong{display:block;font-size:30px;margin:14px 0 4px}.scenario-card span,.scenario-card small{display:block;color:var(--muted);font-size:12px}.score-row{display:grid;grid-template-columns:120px 1fr 58px;align-items:center;gap:16px;margin:19px 0;font-size:14px}.score-row>span{color:var(--muted)}.bar{height:10px;border-radius:8px;background:#e5e5ea;overflow:hidden}.bar i{display:block;height:100%;border-radius:8px;background:var(--blue)}.score-row b{text-align:right;font-size:15px}.score-row em{font-style:normal;color:var(--muted);font-size:12px}.suggestions{display:grid;grid-template-columns:1fr 1fr;gap:13px}.suggestion{padding:19px;border-radius:17px;background:#f5f5f7;border:1px solid rgba(60,60,67,.11)}.suggestion small{color:#c93400;font-weight:800;font-size:11px}.suggestion h3{font-size:17px;margin:9px 0}.suggestion p{font-size:13px;color:var(--muted);line-height:1.7;margin:0}.success{padding:18px;border-radius:17px;background:#e9f9ef;border:1px solid rgba(52,199,89,.22);color:#176b31;font-size:14px;line-height:1.9}.success small{color:#6e6e73}.note{margin-top:14px;padding:16px 18px;border-radius:16px;background:#eef5ff;border:1px solid rgba(0,122,255,.2);color:#24518a;font-size:14px;line-height:1.7}.empty{padding:20px;color:var(--muted);font-size:14px}.foot{font-size:11px;color:#8e8e93;text-align:center;margin:22px 0 4px}@media(max-width:680px){body{padding:12px}.meta{display:none}.hero{padding:28px 22px}.title{font-size:32px}.scoreline{margin-top:24px}.score{font-size:84px}.stats{grid-template-columns:1fr}.module{min-height:80px;padding:15px 17px}.modal{padding:10px}.modal-card{width:100%;max-height:calc(100vh - 20px);padding:25px 20px}.modal-head h2{font-size:27px}.scenario-grid,.suggestions{grid-template-columns:1fr}.score-row{grid-template-columns:90px 1fr 48px;gap:10px}}
@@ -1878,23 +2086,31 @@ def fmt_html(r):
   .panel-body{padding:24px!important}
   .score-row{grid-template-columns:92px minmax(0,1fr) 50px!important;column-gap:10px!important}
 }
+.app,.hero,.topbar,.scoreline,.score-info,.stats,.stat{min-width:0}
+.hero,.topbar{overflow:hidden}
+.title{max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.pill{max-width:100%;width:fit-content;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:680px){
+  html,body{max-width:100%;overflow-x:hidden}
+  .topbar{gap:8px}
+  .scoreline{align-items:flex-start;gap:16px}
+  .score-info{padding-left:16px}
+}
 """
     panels = {
-        "scene": ("阅读情景", scene_meta, scene_body),
-        "score": ("评分细节", "八维评分与文章真正的扣分原因", f'{score_rows}<div class="note">{esc(score_note)}</div>'),
+        "scene": ("账号数据", scene_meta, scene_body),
+        "score": ("结构评分细节", "规则分只描述可检测结构，不能抵消事实与来源问题", f'{score_rows}<div class="note">{esc(score_note)}</div>'),
         "action": ("改稿方向", "先看最值得改的地方", f'<div class="suggestions">{suggestion_cards}</div>'),
-        "risk": ("风险复核", "合规 · 写作风格", risk_body),
-        "audience": ("受众画像", "启发式参考", f'{audience_rows}<div class="note">最容易被击中：{esc(top["name"])}（{top["resonance"]}）。最不感冒：{esc(bottom["name"])}（{bottom["resonance"]}）。</div>'),
+        "risk": ("风险复核", "合规 · 证据 · 写作风格", risk_body),
+        "audience": ("读者原型适配", "启发式参考，不是用户行为概率", f'{audience_rows}<div class="note">最适配：{esc(top["name"])}（{top["match_index"]}）。最不适配：{esc(bottom["name"])}（{bottom["match_index"]}）。</div>'),
     }
     panel_html = "".join(f'<section class="modal-panel" id="panel-{key}"><div class="modal-head"><div><h2>{title}</h2><p>{meta}</p></div><div class="modal-actions"><button class="copy" type="button">复制内容</button><button class="close" type="button">×</button></div></div><div class="panel-body">{body}</div></section>' for key, (title, meta, body) in panels.items())
-    if p["predict"] is None and p.get("scenario_reads"):
-        read_stat_value = "参考"
-        read_stat_meta = " · ".join(f'{item["predict"]:,}' for item in p["scenario_reads"])
-    else:
-        read_stat_value = f'{p["predict"]:,}' if p["predict"] is not None else "参考"
-        read_stat_meta = "账号预测" if p["predict"] is not None else "暂无情景"
-    stats = f'<div class="stats"><div class="stat"><b>{read_stat_value}</b><span>阅读量情景</span><em>{read_stat_meta}</em></div><div class="stat"><b>{p["eff_open_rate"]}%</b><span>有效打开率</span></div><div class="stat"><b>{esc(top["name"].split("·")[0])}</b><span>最强受众</span></div></div>'
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>公众号爆款检测报告</title><style>{css}</style></head><body><main class="app"><header class="topbar glass"><div class="brand"><span class="dot"></span>结果由宇宙第一爆款检测 Skill 输出</div><div class="meta">公众号爆款检测 · {esc(r["style_name"])} · 本地生成报告</div></header><section class="hero glass"><div class="eyebrow">公众号爆款检测 · {esc(r["track_name"])} · {esc(r["style_name"])}</div><h1 class="title">{esc(r["title"])}</h1><p class="lead">这是一篇{esc(r["track_name"])}的{esc(r["style_name"])}。本次复核重点：读者是否能快速理解主题、文章哪里建立了共鸣、下一步最值得改什么。</p><div class="scoreline"><div class="score {score_class}">{score}</div><div class="score-info"><span class="pill level" style="color:{score_color}">等级 {r["level"]} · {esc(r["level_desc"])}</span><span class="pill style">体裁 {esc(r["style_name"])}</span><div class="verdict">综合评分 / 100 · 八维 · 已按体裁适配</div></div></div>{stats}</section><div class="section-head"><h2>查看检测详情</h2><span>点击模块打开详细分析</span></div><section class="modules"><button class="module" data-panel="scene"><span class="module-icon">◌</span><span><strong>阅读情景</strong><small>{scene_meta}</small></span><span class="chevron">›</span></button><button class="module" data-panel="score"><span class="module-icon">◎</span><span><strong>评分细节</strong><small>八维评分与文章真正的扣分原因</small></span><span class="chevron">›</span></button><button class="module" data-panel="action"><span class="module-icon">↗</span><span><strong>改稿方向</strong><small>标题、开头、结尾，先改最值钱的地方</small></span><span class="chevron">›</span></button><button class="module" data-panel="risk"><span class="module-icon">✓</span><span><strong>风险复核</strong><small>合规扫描与自然表达判断</small></span><span class="chevron">›</span></button><button class="module" data-panel="audience"><span class="module-icon">◉</span><span><strong>受众画像</strong><small>谁最容易被这篇文章击中</small></span><span class="chevron">›</span></button></section><footer class="foot">wechat-hit-detector · 本地生成 · 阅读量与受众为预测/模拟值，非真实平台数据</footer></main><div class="modal" id="modal">{panel_html}</div><script>const modal=document.getElementById('modal');document.querySelectorAll('[data-panel]').forEach(function(btn){{btn.addEventListener('click',function(){{document.querySelectorAll('.modal-panel').forEach(function(p){{p.style.display='none'}});document.getElementById('panel-'+btn.dataset.panel).style.display='block';modal.classList.add('open')}})}});document.querySelectorAll('.close').forEach(function(btn){{btn.addEventListener('click',function(){{modal.classList.remove('open')}})}});modal.addEventListener('click',function(e){{if(e.target===modal)modal.classList.remove('open')}});document.addEventListener('keydown',function(e){{if(e.key==='Escape')modal.classList.remove('open')}});document.querySelectorAll('.copy').forEach(function(btn){{btn.addEventListener('click',function(){{var panel=btn.closest('.modal-panel');var text=panel.innerText;navigator.clipboard.writeText(text).then(function(){{btn.textContent='已复制';btn.classList.add('copied');setTimeout(function(){{btn.textContent='复制内容';btn.classList.remove('copied')}},1600)}})}})}});</script></body></html>'''
+    gate = r["editorial_gate"]
+    evidence_count = len(r.get("evidence", []))
+    data_value = f'{p["baseline_reads"]:,}' if p.get("baseline_reads") is not None else "未估算"
+    data_meta = "账号历史算术基线" if p.get("baseline_reads") is not None else "缺少真实账号数据"
+    stats = f'<div class="stats"><div class="stat"><b>{esc(gate["label"])}</b><span>编辑结论</span><em>{esc(gate["summary"])}</em></div><div class="stat"><b>{evidence_count}</b><span>证据提示</span><em>不能被结构分抵消</em></div><div class="stat"><b>{data_value}</b><span>账号数据</span><em>{data_meta}</em></div></div>'
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>公众号文章编辑复核报告</title><style>{css}</style></head><body><main class="app"><header class="topbar glass"><div class="brand"><span class="dot"></span>wechat-hit-detector · 编辑质量复核</div><div class="meta">公众号文章复核 · {esc(r["style_name"])} · 本地生成</div></header><section class="hero glass"><div class="eyebrow">公众号编辑复核 · {esc(r["track_name"])} · {esc(r["style_name"])}</div><h1 class="title">{esc(r["title"])}</h1><p class="lead">本报告先检查事实、来源和发布风险，再用结构分辅助定位短板。高分不能抵消证据缺失，也不代表平台推荐。</p><div class="scoreline"><div class="score {score_class}">{score}</div><div class="score-info"><span class="pill level" style="color:{score_color}">{esc(gate["label"])} · 等级 {r["level"]}</span><span class="pill style">体裁 {esc(r["style_name"])}</span><div class="verdict">结构参考分 / 100 · 不是爆款概率</div></div></div>{stats}</section><div class="section-head"><h2>查看复核详情</h2><span>点击模块打开详细分析</span></div><section class="modules"><button class="module" data-panel="scene"><span class="module-icon">◌</span><span><strong>账号数据</strong><small>{scene_meta}</small></span><span class="chevron">›</span></button><button class="module" data-panel="score"><span class="module-icon">◎</span><span><strong>结构评分</strong><small>八维规则信号与具体短板</small></span><span class="chevron">›</span></button><button class="module" data-panel="action"><span class="module-icon">↗</span><span><strong>改稿方向</strong><small>优先处理不能被总分抵消的问题</small></span><span class="chevron">›</span></button><button class="module" data-panel="risk"><span class="module-icon">✓</span><span><strong>风险复核</strong><small>合规、证据与自然表达</small></span><span class="chevron">›</span></button><button class="module" data-panel="audience"><span class="module-icon">◉</span><span><strong>读者适配</strong><small>文本特征与预设偏好的适配指数</small></span><span class="chevron">›</span></button></section><footer class="foot">wechat-hit-detector · 本地编辑复核 · 不预测平台推荐、阅读量或用户行为</footer></main><div class="modal" id="modal">{panel_html}</div><script>const modal=document.getElementById('modal');document.querySelectorAll('[data-panel]').forEach(function(btn){{btn.addEventListener('click',function(){{document.querySelectorAll('.modal-panel').forEach(function(p){{p.style.display='none'}});document.getElementById('panel-'+btn.dataset.panel).style.display='block';modal.classList.add('open')}})}});document.querySelectorAll('.close').forEach(function(btn){{btn.addEventListener('click',function(){{modal.classList.remove('open')}})}});modal.addEventListener('click',function(e){{if(e.target===modal)modal.classList.remove('open')}});document.addEventListener('keydown',function(e){{if(e.key==='Escape')modal.classList.remove('open')}});document.querySelectorAll('.copy').forEach(function(btn){{btn.addEventListener('click',function(){{var panel=btn.closest('.modal-panel');var text=panel.innerText;navigator.clipboard.writeText(text).then(function(){{btn.textContent='已复制';btn.classList.add('copied');setTimeout(function(){{btn.textContent='复制内容';btn.classList.remove('copied')}},1600)}})}})}});</script></body></html>'''
 
 
 def main():
@@ -1904,12 +2120,13 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ap = argparse.ArgumentParser(description="公众号文章发布前爆款检测 v2.2 全行业版")
+    ap = argparse.ArgumentParser(description="公众号文章发布前编辑质量复核 v2.4 全行业版")
     ap.add_argument("title")
     ap.add_argument("article")
     ap.add_argument("--fans", type=int, default=None,
-                    help="账号真实粉丝数；不提供时不估计阅读量")
-    ap.add_argument("--open-rate", type=float, default=None)
+                    help="账号真实粉丝数；需与 --open-rate 同时提供才显示账号历史算术基线")
+    ap.add_argument("--open-rate", type=float, default=None,
+                    help="账号真实历史平均打开率；只用于算术基线，不预测本文表现")
     ap.add_argument("--track", default="auto", choices=["auto"] + list(TRACKS.keys()))
     ap.add_argument("--html-out", default=None,
                     help="HTML 报告路径；默认写入正文旁，目录不可写时回退到系统临时目录")
