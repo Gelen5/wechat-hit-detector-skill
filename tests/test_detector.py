@@ -105,6 +105,17 @@ class DetectorRegressionTests(unittest.TestCase):
             "本层只基于标题和正文做编辑复核；图片、封面、评论区、账号资料和视频字幕需另行检查。",
         )
 
+    def test_html_stats_use_dynamic_scenario_reads(self):
+        result = detector.detect(
+            "AI漫剧创作者现状：高成本、低胜率，但机会正在洗牌",
+            "2026年AI漫剧市场拥挤，创作者需要先看清成本、产量和投测路径，再决定怎么走。",
+            track="tech",
+        )
+        html = detector.fmt_html(result)
+        dynamic_summary = " · ".join(f'{item["predict"]:,}' for item in result["predict"]["scenario_reads"])
+        self.assertIn(dynamic_summary, html)
+        self.assertNotIn("75 · 756 · 7,560", html)
+
 
 if __name__ == "__main__":
     unittest.main()
