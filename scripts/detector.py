@@ -197,6 +197,17 @@ BANNED_SUPERLATIVE_RE = re.compile(
 BANNED_MEDICAL = ["治疗", "治愈", "抗癌", "消炎", "杀菌", "瘦身", "燃脂", "排毒", "药到病除", "降三高", "治百病"]
 BANNED_INDUCE = ["私信", "加微信", "免费领", "扫码", "限时", "抢购", "秒杀", "下单", "领券", "优惠券", "抽奖"]
 BANNED_FALSE = ["保证有效", "百分百有效", "无效退款", "稳赚不赔", "一定有效", " guaranteed"]
+URL_RE = re.compile(r"https?://|www\.", re.I)
+PHONE_RE = re.compile(r"(?<!\d)(?:1[3-9]\d{9}|0\d{2,3}[- ]?\d{7,8})(?!\d)")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+LONG_ID_RE = re.compile(r"(?<!\d)\d{8,}(?!\d)")
+CONTACT_TERMS = ["加微信", "微信号", "vx", "v信", "私信我", "私信领取", "扫码", "二维码", "联系我", "主页联系", "评论区留"]
+COMMERCE_TERMS = ["下单", "购买", "报价", "咨询", "接单", "招聘", "招人", "课程", "服务", "优惠", "限时", "秒杀", "返利", "佣金", "代理"]
+QUALIFICATION_TERMS = ["资质", "许可证", "备案", "授权", "官方入口", "营业执照", "医师", "执业", "牌照", "编号"]
+FINANCE_TERMS = ["股票", "基金", "理财", "投资", "收益", "回报", "本金", "贷款", "保险", "币", "荐股"]
+PROMISE_TERMS = ["保证", "稳赚", "必赚", "躺赚", "翻倍", "无风险", "包过", "包成功", "一定能", "立刻见效"]
+PRIVACY_TERMS = ["身份证", "手机号", "住址", "车牌", "订单号", "快递单", "聊天记录", "定位", "银行卡"]
+PLATFORM_SURFACE_TERMS = ["闲鱼", "淘宝", "拼多多", "抖音", "小红书", "快手", "微博", "知乎", "群聊"]
 # 绝对化对比词（反AI量化用）：模板腔信号
 ABSOLUTE_CLAIM = ["一定", "必须", "绝对", "毫无疑问", "毋庸置疑", "所有人都", "每个人都应该",
                   "无一例外", "百分之百", "100%", "必然", "统统", "全都"]
@@ -315,6 +326,113 @@ def evidence_review(title, body, track, style):
                        "title": "标题正文关联偏弱",
                        "detail": "标题中的核心对象或承诺在正文中未得到足够展开，需人工核对是否标题党。"})
     return issues
+
+
+def _first_context(text, terms, window=30):
+    """Return the first compact snippet around any matched term."""
+    for term in terms:
+        idx = text.lower().find(str(term).lower())
+        if idx >= 0:
+            start = max(0, idx - window)
+            end = min(len(text), idx + len(str(term)) + window)
+            return text[start:end].replace("\n", " ").strip(), term
+    return "", ""
+
+
+def _first_regex_context(text, regex, label, window=30):
+    m = regex.search(text)
+    if not m:
+        return "", ""
+    start = max(0, m.start() - window)
+    end = min(len(text), m.end() + window)
+    return text[start:end].replace("\n", " ").strip(), label
+
+
+def _risk_item(surface, quote, signal, mechanism, action, severity="review", keep=""):
+    return {
+        "surface": surface,
+        "quote": quote,
+        "signal": signal,
+        "mechanism": mechanism,
+        "action": action,
+        "severity": severity,
+        "keep": keep,
+    }
+
+
+def content_risk_review(title, body, track):
+    """Split platform-machine review signals from substantive content risks."""
+    text = normalize_text(title + "\n" + body)
+    compact = compact_text(text).lower()
+    machine, substantive, confirm = [], [], []
+
+    contact_quote, contact_hit = _first_context(text, CONTACT_TERMS)
+    commerce_quote, commerce_hit = _first_context(text, COMMERCE_TERMS)
+    platform_quote, platform_hit = _first_context(text, PLATFORM_SURFACE_TERMS)
+    promise_quote, promise_hit = _first_context(text, PROMISE_TERMS + BANNED_FALSE)
+    medical_quote, medical_hit = _first_context(text, BANNED_MEDICAL + HEALTH_RISK)
+    finance_quote, finance_hit = _first_context(text, FINANCE_TERMS)
+    privacy_quote, privacy_hit = _first_context(text, PRIVACY_TERMS)
+    url_quote, url_hit = _first_regex_context(text, URL_RE, "外链")
+    phone_quote, phone_hit = _first_regex_context(text, PHONE_RE, "电话")
+    email_quote, email_hit = _first_regex_context(text, EMAIL_RE, "邮箱")
+    long_id_quote, long_id_hit = _first_regex_context(text, LONG_ID_RE, "长数字编号")
+
+    if url_hit:
+        machine.append(_risk_item("正文", url_quote, "外链/跳转", "平台机器审核可能把完整外链当作导流或广告信号。",
+                                  "保留必要来源名称；若必须放链接，改成引用来源名+搜索路径。", "review"))
+    if contact_hit or phone_hit or email_hit or long_id_hit:
+        quote = contact_quote or phone_quote or email_quote or long_id_quote
+        hit = contact_hit or phone_hit or email_hit or long_id_hit
+        severity = "warn" if commerce_hit else "review"
+        machine.append(_risk_item("正文", quote, f"联系方式信号：{hit}", "联系方式、二维码、长数字编号容易触发导流/营销机器审核。",
+                                  "删除非必要联系方式；确需保留时改为平台内官方入口或后台自动回复。", severity))
+    if platform_hit:
+        machine.append(_risk_item("正文", platform_quote, f"平台/圈层词：{platform_hit}",
+                                  "平台名本身不等于违规，但机器审核可能结合交易、导流、争议词一起放大风险。",
+                                  "只保留叙事必需的平台名，避免和联系方式、价格、下单动作连在同一句。", "review"))
+    if commerce_hit and contact_hit:
+        substantive.append(_risk_item("正文", commerce_quote or contact_quote, "交易动作 + 导流入口",
+                                      "这不是单纯敏感词，而是可能被理解为站外交易/引流闭环。",
+                                      "拆掉交易闭环：删联系方式、删下单引导，改成内容价值或官方合规入口。", "warn",
+                                      "可以保留真实经验和判断，不必把观点磨平。"))
+
+    medical_signal = medical_hit or track == "health"
+    if medical_signal and promise_hit and not any(w in compact for w in [compact_text(x).lower() for x in QUALIFICATION_TERMS]):
+        substantive.append(_risk_item("标题/正文", medical_quote or promise_quote, "健康/疗效承诺缺少资质边界",
+                                      "医疗健康内容的确定性效果、治愈式表达需要资质、适用边界和来源支撑。",
+                                      "改成个人体验/科普边界，删除治愈、保证、立刻见效；补来源或就医提示。", "warn"))
+    elif medical_signal and medical_hit:
+        confirm.append(_risk_item("正文", medical_quote, "健康词", "健康词出现后需要确认是否有诊疗、功效、适用人群边界。",
+                                  "人工核对来源、资质和免责声明，必要时改为生活经验表达。"))
+
+    if finance_hit and (promise_hit or any(w in compact for w in [compact_text(x).lower() for x in ["荐股", "收益翻倍", "稳赚不赔"]])):
+        substantive.append(_risk_item("标题/正文", finance_quote or promise_quote, "财经投资承诺",
+                                      "投资收益承诺或荐股倾向属于实质风险，不只是词表命中。",
+                                      "删收益保证和操作指令，补风险提示、时间范围和非投资建议边界。", "warn"))
+    elif finance_hit and track == "finance":
+        confirm.append(_risk_item("正文", finance_quote, "财经信息", "财经内容需要核对时间、来源和风险提示。",
+                                  "补数据来源、截至日期和非投资建议声明。"))
+
+    if privacy_hit:
+        substantive.append(_risk_item("正文", privacy_quote, "隐私/个人信息",
+                                      "身份证、手机号、订单、定位等属于真实个人信息暴露风险。",
+                                      "打码或改成类别描述，删除可识别个人的完整信息。", "warn"))
+    if commerce_hit and promise_hit:
+        substantive.append(_risk_item("标题/正文", promise_quote or commerce_quote, "商业承诺/夸大效果",
+                                      "购买、服务、课程等商业语境里出现保证、稳赚、包成功，会从营销合规变成事实承诺风险。",
+                                      "保留卖点，但改成可验证事实、适用条件和案例边界。", "warn"))
+
+    if commerce_hit and not any(w in compact for w in [compact_text(x).lower() for x in QUALIFICATION_TERMS]):
+        confirm.append(_risk_item("正文", commerce_quote, "商业/服务信息", "涉及服务、课程、报价、优惠时，需要确认是否具备资质、价格、售后边界。",
+                                  "发布前核对主体、价格、售后、资质和广告标识。"))
+
+    return {
+        "machine": machine[:5],
+        "substantive": substantive[:5],
+        "confirm": confirm[:5],
+        "boundary": "本层只基于标题和正文做编辑复核；图片、封面、评论区、账号资料和视频字幕需另行检查。",
+    }
 
 
 def detect_track(title, body, forced=None):
@@ -1153,6 +1271,7 @@ def detect(title, body, fans=None, open_rate=None, track=None):
     pred = predict_reads(fans, open_rate, total, track, genes)
     audience = simulate_audience(title, body, track, sin)
     evidence = evidence_review(title, body, track, style_id)
+    content_risk = content_risk_review(title, body, track)
     if len(body.strip()) < 300:
         score_confidence = "low"
     elif len(body.strip()) < 800:
@@ -1178,6 +1297,7 @@ def detect(title, body, fans=None, open_rate=None, track=None):
         "level": level,
         "level_desc": LEVELS[level][1],
         "compliance": issues,
+        "content_risk": content_risk,
         "evidence": evidence,
         "score_confidence": score_confidence,
         "ai_smell": {"penalty": penalty, "risk": ai_risk, "findings": ai_find},
@@ -1202,6 +1322,20 @@ def build_suggestions(r):
         if it.get("fix"):
             detail += " ｜ " + it["fix"]
         sugg.append({"pri": pr, "title": it["line"], "detail": detail})
+    content_risk = r.get("content_risk", {})
+    for it in content_risk.get("substantive", []):
+        pr = "P0" if it.get("severity") == "block" else "P1"
+        quote = f"片段：{it['quote']} ｜ " if it.get("quote") else ""
+        sugg.append({"pri": pr, "title": "发布风险：" + it["signal"],
+                     "detail": quote + it["mechanism"] + " ｜ 最小修改：" + it["action"]})
+    for it in content_risk.get("machine", [])[:2]:
+        quote = f"片段：{it['quote']} ｜ " if it.get("quote") else ""
+        sugg.append({"pri": "P1", "title": "机器审核信号：" + it["signal"],
+                     "detail": quote + it["mechanism"] + " ｜ 最小修改：" + it["action"]})
+    for it in content_risk.get("confirm", [])[:2]:
+        quote = f"片段：{it['quote']} ｜ " if it.get("quote") else ""
+        sugg.append({"pri": "P2", "title": "发布前确认：" + it["signal"],
+                     "detail": quote + it["mechanism"] + " ｜ 核对：" + it["action"]})
     for it in r.get("evidence", []):
         sugg.append({"pri": "P1", "title": it["title"], "detail": it["detail"]})
     # 2. 八维短板
@@ -1325,6 +1459,31 @@ def fmt_md(r):
             tag = "🚫" if it["severity"] == "block" else "⚠️"
             fix = f" → 建议：{it['fix']}" if it.get("fix") else ""
             L.append(f"- {tag} {it['line']}（命中：{', '.join(it['hits'])}）{fix}")
+    L.append("\n## L3+ 发布风险复核（机器审核 vs 内容实质）")
+    cr = r.get("content_risk", {})
+    machine = cr.get("machine", [])
+    substantive = cr.get("substantive", [])
+    confirm = cr.get("confirm", [])
+    if not machine and not substantive:
+        L.append("- ✅ 未发现明显的机器审核表面信号或内容实质风险")
+    if machine:
+        L.append("- 机器审核信号：")
+        for it in machine:
+            quote = f"｜片段：{it['quote']}" if it.get("quote") else ""
+            L.append(f"  - ⚠️ {it['signal']}：{it['mechanism']} → {it['action']}{quote}")
+    if substantive:
+        L.append("- 内容实质风险：")
+        for it in substantive:
+            quote = f"｜片段：{it['quote']}" if it.get("quote") else ""
+            keep = f"｜保留：{it['keep']}" if it.get("keep") else ""
+            L.append(f"  - ⚠️ {it['signal']}：{it['mechanism']} → {it['action']}{quote}{keep}")
+    if confirm:
+        L.append("- 发布前人工确认：")
+        for it in confirm:
+            quote = f"｜片段：{it['quote']}" if it.get("quote") else ""
+            L.append(f"  - {it['signal']}：{it['action']}{quote}")
+    if cr.get("boundary"):
+        L.append(f"> {cr['boundary']}")
     L.append("\n## 证据与时效复核")
     if not r.get("evidence"):
         L.append("- ✅ 未发现明显的来源、时效或标题正文关联提示")
@@ -1663,7 +1822,19 @@ def fmt_html(r):
     audience_rows = "".join(f'<div class="score-row"><span>{esc(a["name"])}</span><div class="bar"><i style="width:{a["resonance"]}%"></i></div><b>{a["resonance"]}</b></div>' for a in aud[:4])
     compliance = '<div class="success">✓ 未命中当前已知词表<br><small>不等于平台审核通过，仍需结合事实、来源和上下文复核。</small></div>' if not r["compliance"] else '<div class="empty">存在需要人工复核的合规提示。</div>'
     ai_risk = r["ai_smell"]["risk"]
-    risk_body = f'<div class="success">✓ 合规词扫描：未发现当前词表命中<br>✓ 写作风格风险：{ai_risk}/100<br>✓ 口语化、对话感和自然表达明显<br><small>词表未命中不等于平台审核通过，仍需结合事实、来源和上下文复核。</small></div><div class="note">标题正文关联提示：建议在开头明确标题与正文核心矛盾的关系，避免读者预期错位。</div>'
+    cr = r.get("content_risk", {})
+    risk_notes = []
+    for it in cr.get("substantive", [])[:3]:
+        risk_notes.append(f'内容实质 · {esc(it["signal"])}：{esc(it["action"])}')
+    for it in cr.get("machine", [])[:3]:
+        risk_notes.append(f'机器审核 · {esc(it["signal"])}：{esc(it["action"])}')
+    for it in cr.get("confirm", [])[:2]:
+        risk_notes.append(f'人工确认 · {esc(it["signal"])}：{esc(it["action"])}')
+    if risk_notes:
+        risk_extra = '<div class="note">' + '<br>'.join(risk_notes) + '</div>'
+    else:
+        risk_extra = '<div class="success">✓ 未发现明显的机器审核表面信号或内容实质风险</div>'
+    risk_body = f'<div class="success">✓ 合规词扫描：{"未发现当前词表命中" if not r["compliance"] else "存在需要人工复核的命中项"}<br>✓ 写作风格风险：{ai_risk}/100<br><small>词表未命中不等于平台审核通过；风险层会区分机器误判信号与内容实质问题。</small></div>{risk_extra}<div class="note">标题正文关联提示：建议在开头明确标题与正文核心矛盾的关系，避免读者预期错位。</div>'
     css = """
 :root{--bg:#f5f5f7;--text:#1d1d1f;--muted:#6e6e73;--blue:#007aff;--green:#34c759;--orange:#ff9500;--red:#ff3b30;--line:rgba(60,60,67,.14)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Avenir Next","Noto Sans SC","PingFang SC","Microsoft YaHei UI",sans-serif;color:var(--text);background:radial-gradient(820px 480px at 50% -14%,#fff 0,#f5f5f7 58%,#e8ebf0 100%);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}body{padding:26px;line-height:1.5}.app{max-width:980px;margin:auto}.glass{background:rgba(255,255,255,.68);border:1px solid rgba(255,255,255,.82);box-shadow:0 1px 0 rgba(255,255,255,.95) inset,0 14px 36px rgba(60,60,67,.1);backdrop-filter:blur(32px) saturate(170%);-webkit-backdrop-filter:blur(32px) saturate(170%)}.topbar{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-radius:17px}.brand{font-size:13px;font-weight:700}.dot{display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#007aff;box-shadow:0 0 0 5px rgba(0,122,255,.12)}.meta{font-size:11px;color:var(--muted)}.hero{margin-top:14px;padding:40px 42px 36px;border-radius:24px}.eyebrow{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.13em}.title{font-size:clamp(31px,4vw,46px);line-height:1.1;letter-spacing:-.06em;margin:16px 0 12px}.lead{max-width:700px;color:var(--muted);font-size:14px;line-height:1.8}.scoreline{display:flex;align-items:center;gap:24px;margin-top:30px}.score{font-size:102px;line-height:.76;letter-spacing:-.1em;font-weight:800;font-variant-numeric:tabular-nums}.score-high{color:var(--green)}.score-good{color:var(--blue)}.score-mid{color:var(--orange)}.score-low{color:var(--red)}.score-info{border-left:1px solid var(--line);padding-left:24px;display:grid;gap:10px}.pill{display:inline-block;width:max-content;padding:7px 13px;border-radius:999px;font-size:12px;font-weight:700}.pill.level{background:#eaf3ff;color:#007aff}.pill.style{background:#eef0ff;color:#5856d6}.verdict{font-size:12px;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:32px;padding-top:20px;border-top:1px solid var(--line)}.stat{min-height:78px;padding:16px 17px;border-radius:16px;background:rgba(245,245,247,.72);border:1px solid rgba(60,60,67,.1);display:grid;grid-template-columns:auto 1fr;grid-template-rows:1fr auto;column-gap:8px;align-items:center}.stat b{font-size:25px;line-height:1;grid-column:1;grid-row:1}.stat span{font-size:11px;color:var(--muted);grid-column:2;grid-row:1}.stat em{font-size:11px;color:var(--blue);font-style:normal;grid-column:1/-1;grid-row:2;margin-top:7px}.section-head{display:flex;justify-content:space-between;align-items:center;margin:25px 3px 10px}.section-head h2{font-size:17px;margin:0}.section-head span{font-size:11px;color:var(--muted)}.modules{display:grid;gap:12px}.module{width:100%;min-height:92px;padding:18px 23px;border-radius:19px;border:1px solid rgba(255,255,255,.82);background:rgba(255,255,255,.64);box-shadow:0 1px 0 rgba(255,255,255,.92) inset,0 8px 20px rgba(60,60,67,.08);display:grid;grid-template-columns:52px 1fr auto;align-items:center;gap:17px;text-align:left;color:var(--text);cursor:pointer;transition:.2s}.module:hover{transform:translateY(-2px);border-color:rgba(0,122,255,.34);box-shadow:0 12px 26px rgba(0,122,255,.12)}.module-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:15px;background:#eef2ff;color:var(--blue);font-size:21px}.module:nth-child(3) .module-icon{background:#fff3e0;color:var(--orange)}.module:nth-child(4) .module-icon{background:#e9f9ef;color:var(--green)}.module strong{font-size:17px;letter-spacing:-.025em}.module small{display:block;color:var(--muted);font-size:12px;margin-top:5px}.chevron{color:#8e8e93;font-size:27px}.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:28px;background:rgba(0,0,0,.28);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:10}.modal.open{display:flex}.modal-card{width:min(900px,calc(100vw - 56px));max-height:calc(100vh - 56px);overflow:auto;padding:40px 44px;border-radius:28px;background:rgba(255,255,255,.97);border:1px solid rgba(60,60,67,.16);box-shadow:0 28px 90px rgba(0,0,0,.22)}.modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding-bottom:22px;margin-bottom:25px;border-bottom:1px solid var(--line)}.modal-head h2{font-size:32px;letter-spacing:-.055em;margin:0}.modal-head p{font-size:14px;color:var(--muted);margin:7px 0 0}.modal-actions{display:flex;gap:9px;align-items:center}.copy{border:0;border-radius:999px;padding:10px 15px;background:var(--blue);color:#fff;font:inherit;font-size:13px;font-weight:650;cursor:pointer}.copy.copied{background:var(--green)}.close{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:#f2f2f7;color:var(--muted);font-size:24px;cursor:pointer}.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.scenario-card{padding:20px;border-radius:17px;background:#f5f5f7;border:1px solid rgba(60,60,67,.11)}.scenario-card b{font-size:14px}.scenario-card strong{display:block;font-size:30px;margin:14px 0 4px}.scenario-card span,.scenario-card small{display:block;color:var(--muted);font-size:12px}.score-row{display:grid;grid-template-columns:120px 1fr 58px;align-items:center;gap:16px;margin:19px 0;font-size:14px}.score-row>span{color:var(--muted)}.bar{height:10px;border-radius:8px;background:#e5e5ea;overflow:hidden}.bar i{display:block;height:100%;border-radius:8px;background:var(--blue)}.score-row b{text-align:right;font-size:15px}.score-row em{font-style:normal;color:var(--muted);font-size:12px}.suggestions{display:grid;grid-template-columns:1fr 1fr;gap:13px}.suggestion{padding:19px;border-radius:17px;background:#f5f5f7;border:1px solid rgba(60,60,67,.11)}.suggestion small{color:#c93400;font-weight:800;font-size:11px}.suggestion h3{font-size:17px;margin:9px 0}.suggestion p{font-size:13px;color:var(--muted);line-height:1.7;margin:0}.success{padding:18px;border-radius:17px;background:#e9f9ef;border:1px solid rgba(52,199,89,.22);color:#176b31;font-size:14px;line-height:1.9}.success small{color:#6e6e73}.note{margin-top:14px;padding:16px 18px;border-radius:16px;background:#eef5ff;border:1px solid rgba(0,122,255,.2);color:#24518a;font-size:14px;line-height:1.7}.empty{padding:20px;color:var(--muted);font-size:14px}.foot{font-size:11px;color:#8e8e93;text-align:center;margin:22px 0 4px}@media(max-width:680px){body{padding:12px}.meta{display:none}.hero{padding:28px 22px}.title{font-size:32px}.scoreline{margin-top:24px}.score{font-size:84px}.stats{grid-template-columns:1fr}.module{min-height:80px;padding:15px 17px}.modal{padding:10px}.modal-card{width:100%;max-height:calc(100vh - 20px);padding:25px 20px}.modal-head h2{font-size:27px}.scenario-grid,.suggestions{grid-template-columns:1fr}.score-row{grid-template-columns:90px 1fr 48px;gap:10px}}
