@@ -43,6 +43,30 @@ class DetectorRegressionTests(unittest.TestCase):
         )
         self.assertTrue(any("诱导分享/关注" == i["line"] for i in issues))
 
+    def test_scan_code_metaphor_is_not_treated_as_conversion(self):
+        body = "今天你扫码进直播间，那会儿你得自带小板凳。"
+        issues = detector.compliance_check("老电视机", body, "senior")
+        risk = detector.content_risk_review("老电视机", body, "senior")
+        self.assertFalse(any(i["line"] == "营销/导流表述（需结合语境）" for i in issues))
+        self.assertFalse(any("联系方式信号" in i["signal"] for i in risk["machine"]))
+
+    def test_scan_code_conversion_action_remains_a_review_hit(self):
+        body = "扫码关注后领取课程资料。"
+        issues = detector.compliance_check("免费资料", body, "education")
+        risk = detector.content_risk_review("免费资料", body, "education")
+        self.assertTrue(any(i["line"] == "营销/导流表述（需结合语境）" for i in issues))
+        self.assertTrue(any("联系方式信号" in i["signal"] for i in risk["machine"]))
+
+    def test_numbered_nostalgia_inventory_is_narrative_not_tutorial(self):
+        body = """01 黑白电视机
+那会儿全村人搬着板凳看电视。
+02 缝纫机
+妈妈踩着踏板给我们补衣服。
+03 二八大杠
+小时候坐在爸爸后座去赶集。"""
+        style_id, _, _ = detector.detect_style("认识这些老物件的人，都曾年轻过", body)
+        self.assertEqual(style_id, "narrative")
+
     def test_negated_medical_claim_is_not_treated_as_a_claim(self):
         issues = detector.compliance_check(
             "健康科普",
@@ -155,6 +179,20 @@ class DetectorRegressionTests(unittest.TestCase):
         )
         self.assertFalse(any(i["title"] == "标题数字承诺未被正文承接" for i in issues))
 
+    def test_item_count_title_is_supported_by_numbered_sections(self):
+        body = "01 黑白电视机\n02 缝纫机\n03 二八大杠\n04 磁带\n05 粮票\n06 搪瓷缸\n07 手电筒\n08 爆米花机"
+        issues = detector.evidence_review("认识这8样老物件的人，都曾年轻过", body, "senior", "narrative")
+        self.assertFalse(any(i["title"] == "标题数字承诺未被正文承接" for i in issues))
+
+    def test_historical_first_claim_requires_source(self):
+        result = detector.detect(
+            "粮票",
+            '粮票是最早的"数字货币"。',
+            track="senior",
+        )
+        self.assertTrue(any(i["claim_type"] == "historical_first" for i in result["source_ledger"]))
+        self.assertEqual(result["editorial_gate"]["status"], "hold")
+
     def test_revision_comparison_proves_resolved_and_new_issues(self):
         before = detector.detect(
             "60岁后去这6座小城：第4个我后悔现在才知道",
@@ -169,6 +207,12 @@ class DetectorRegressionTests(unittest.TestCase):
         comparison = compare_versions.compare_results(before, after)
         self.assertTrue(any(i["title"] == "标题悬念在正文中没有兑现" for i in comparison["resolved"]))
         self.assertFalse(any(i["title"] == "标题悬念在正文中没有兑现" for i in comparison["remaining"]))
+
+    def test_low_structure_dimensions_do_not_become_publish_blockers(self):
+        result = detector.detect("普通的一天", "今天下班回家吃饭。", track="general")
+        suggestions = detector.build_suggestions(result)
+        dimension_titles = {"提升" + name for name in detector.DIM_NAMES.values()}
+        self.assertFalse(any(item["pri"] == "P0" and item["title"] in dimension_titles for item in suggestions))
 
     def test_content_risk_splits_machine_and_substantive_signals(self):
         result = detector.content_risk_review(

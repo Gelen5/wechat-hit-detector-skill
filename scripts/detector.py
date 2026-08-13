@@ -321,7 +321,7 @@ def _title_body_overlap(title, body):
 
 
 TITLE_NUMBER_RE = re.compile(
-    r"(?<!第)\d+(?:\.\d+)?(?:岁|元|块钱?|分钟|小时|天|年|个|座|条|种|%|折|倍)"
+    r"(?<!第)\d+(?:\.\d+)?(?:岁|元|块钱?|分钟|小时|天|年|个|座|条|种|样|件|%|折|倍)"
 )
 AUTHORITY_TERMS = ("联合国", "国务院", "卫健委", "市场监管总局", "研究表明",
                    "报告显示", "数据显示", "统计显示", "专家表示", "权威机构")
@@ -357,7 +357,7 @@ def _numeric_claim_supported(token, body):
             chinese_number = ("" if tens == 1 else digits[tens]) + "十" + (digits[ones] if ones else "")
         if chinese_number and compact_text(chinese_number + number_match.group(2)) in compact_text(body):
             return True
-    match = re.fullmatch(r"(\d+)(个|座|条|种)", token)
+    match = re.fullmatch(r"(\d+)(个|座|条|种|样|件)", token)
     if not match:
         return False
     promised = int(match.group(1))
@@ -384,6 +384,10 @@ def build_source_ledger(title, body, track, style):
             claim_type = "policy"
             severity = "block"
             action = "补充现行文件名称、发布机构、生效日期和来源链接。"
+        elif re.search(r"(?:最早的|首个|首款|首创).{1,18}", sentence):
+            claim_type = "historical_first"
+            severity = "block"
+            action = "这是历史首创/最早定义性断言；补充权威史料，无法证明时改成不带首创结论的描述。"
         elif track in {"health", "finance"} and (
                 TITLE_NUMBER_RE.search(sentence) or any(term in sentence for term in PROMISE_TERMS + BANNED_MEDICAL)):
             claim_type = "professional"
@@ -464,7 +468,8 @@ def evidence_review(title, body, track, style):
                        "detail": "标题中的核心对象或承诺在正文中未得到足够展开，需人工核对是否标题党。"})
     issues.extend(_title_promise_issues(title, body))
     ledger = build_source_ledger(title, body, track, style)
-    missing_authority = [item for item in ledger if item["claim_type"] in {"authority", "policy", "professional"}
+    missing_authority = [item for item in ledger if item["claim_type"] in
+                         {"authority", "policy", "professional", "historical_first"}
                          and item["status"] == "missing_source"]
     if missing_authority and not any(item["type"] == "source" for item in issues):
         issues.append({"type": "claim_source", "severity": "block",
@@ -503,6 +508,23 @@ def _first_regex_context(text, regex, label, window=30):
     return text[start:end].replace("\n", " ").strip(), label
 
 
+SCAN_CONVERSION_RE = re.compile(
+    r"(?:扫码|扫描二维码).{0,14}(?:关注|领取|咨询|购买|报名|下单|加群|联系|添加|优惠|课程|服务)|"
+    r"(?:关注|领取|咨询|购买|报名|下单|加群|联系|添加).{0,14}(?:扫码|二维码)"
+)
+
+
+def _scan_conversion_context(text, window=30):
+    """Return scan-code context only when it forms a conversion action."""
+    value = normalize_text(text)
+    match = SCAN_CONVERSION_RE.search(value)
+    if not match:
+        return "", ""
+    start = max(0, match.start() - window)
+    end = min(len(value), match.end() + window)
+    return value[start:end].replace("\n", " ").strip(), "扫码/二维码"
+
+
 def _risk_item(surface, quote, signal, mechanism, action, severity="review", keep=""):
     return {
         "surface": surface,
@@ -521,7 +543,9 @@ def content_risk_review(title, body, track):
     compact = compact_text(text).lower()
     machine, substantive, confirm = [], [], []
 
-    contact_quote, contact_hit = _first_context(text, CONTACT_TERMS)
+    contact_quote, contact_hit = _first_context(text, [term for term in CONTACT_TERMS if term != "扫码"])
+    if not contact_hit:
+        contact_quote, contact_hit = _scan_conversion_context(text)
     commerce_quote, commerce_hit = _first_context(text, COMMERCE_TERMS)
     platform_quote, platform_hit = _first_context(text, PLATFORM_SURFACE_TERMS)
     promise_quote, promise_hit = _first_context(text, PROMISE_TERMS + BANNED_FALSE)
@@ -665,13 +689,14 @@ def detect_style(title, body):
     has_sub = len(subheading) >= 2
     sc = {"practical": 0, "emotion": 0, "opinion": 0, "narrative": 0, "news": 0}
 
-    # 干货方法论：分节 + 方法/清单/步骤（结构化信号权重调高，避免被误判为叙事）
-    if has_sub:
-        sc["practical"] += 4
-    sc["practical"] += min(4, sum(1 for w in
+    # 干货方法论：编号本身不是教程，必须同时出现方法/步骤/建议等行动信号。
+    method_hits = sum(1 for w in
         ["方法", "步骤", "清单", "如何", "怎么", "技巧", "攻略", "模板", "教程", "实操",
-         "建议", "三步", "两步", "干货", "指南", "全攻略", "一篇搞定", "要点"]
-        if w in text))
+          "建议", "三步", "两步", "干货", "指南", "全攻略", "一篇搞定", "要点"]
+        if w in text)
+    if has_sub:
+        sc["practical"] += 4 if method_hits else 1
+    sc["practical"] += min(4, method_hits)
     sc["practical"] += 1 if re.search(r"\d+[.、]|第一|第二|首先|其次|最后", text) else 0
     if re.search(r"第一|第二|第三|1\.|2\.|3\.", text):
         sc["practical"] += 2
@@ -702,6 +727,10 @@ def detect_style(title, body):
         sc["narrative"] += 2
     chars = sum(1 for w in ["父亲", "母亲", "女儿", "儿子", "朋友", "爷爷", "奶奶", "老伴"] if w in text)
     sc["narrative"] += min(2, chars)
+    nostalgia = sum(1 for w in
+        ["老物件", "那会儿", "小时候", "当年", "年代", "记忆", "曾年轻", "过去", "妈妈", "爸爸", "全村"]
+        if w in text)
+    sc["narrative"] += min(6, nostalgia)
 
     # 资讯热点：时间锚点 + 信源
     sc["news"] += min(4, sum(1 for w in
@@ -1106,7 +1135,9 @@ def compliance_check(title, body, track):
         issues.append({"line": "医疗功效表述（需核验资质与证据）", "severity": "warn",
                        "hits": med2[:5],
                        "fix": "区分中性医疗叙述与疗效承诺；涉及治疗结论时核验资质、来源和适用范围。"})
-    ind = find_hits(text, BANNED_INDUCE)
+    ind = [hit for hit in find_hits(text, BANNED_INDUCE) if hit != "扫码"]
+    if _scan_conversion_context(text)[1]:
+        ind.append("扫码/二维码")
     if ind:
         issues.append({"line": "营销/导流表述（需结合语境）", "severity": "warn",
                        "hits": ind[:5],
@@ -1534,9 +1565,9 @@ def build_suggestions(r):
         v = r["scores"][key]
         ratio = v / f
         if ratio < 0.5:
-            pr, tag = "P0", "严重偏低"
+            pr, tag = "P1", "明显偏低"
         elif ratio < 0.75:
-            pr, tag = "P1", "有提升空间"
+            pr, tag = "P2", "有提升空间"
         else:
             continue
         # 视觉呈现对情绪/故事文体非必需，不强制 P0
